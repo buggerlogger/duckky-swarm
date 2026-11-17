@@ -1,0 +1,6 @@
+# the API types Claude Code writes beside a plugin it loads from this folder
+.claude-plugin/types/
+node_modules/
+*.log
+.DS_Store
+Thumbs.db

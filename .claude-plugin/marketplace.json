@@ -1,0 +1,12 @@
+{
+  "name": "duckky-swarm",
+  "description": "Duckky Swarm: Claude Code subagents on the exact model you name.",
+  "owner": { "name": "buggerlogger" },
+  "plugins": [
+    {
+      "name": "duckky-swarm",
+      "source": "./",
+      "description": "Subagents on the exact model you name (Opus 4.6, Opus 5, ...), with proof of the model they ran on."
+    }
+  ]
+}

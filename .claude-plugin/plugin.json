@@ -1,0 +1,33 @@
+{
+  "name": "duckky-swarm",
+  "version": "0.1.0",
+  "description": "Subagents on the exact model you name (Opus 4.6, Opus 5, ...), with proof of the model they ran on, forks, and resume across sessions.",
+  "author": {
+    "name": "buggerlogger",
+    "url": "https://github.com/buggerlogger"
+  },
+  "homepage": "https://github.com/buggerlogger/duckky-swarm",
+  "repository": "https://github.com/buggerlogger/duckky-swarm",
+  "license": "Apache-2.0",
+  "userConfig": {
+    "models": {
+      "type": "string",
+      "title": "Subagent models",
+      "description": "name=model-id pairs, comma separated. Each becomes an agent type Claude uses when you ask for that model, e.g. opus-4-6=claude-opus-4-6.",
+      "default": "opus-4-6=claude-opus-4-6, opus-5=claude-opus-5, opus-5-5=claude-opus-5-5"
+    },
+    "forkMode": {
+      "type": "string",
+      "title": "Fork on another model",
+      "description": "context: a subagent on the chosen model, given a copy of the conversation (works on any model, costs more). true: a real fork, which always stays on the parent's model.",
+      "options": ["context", "true"],
+      "default": "context"
+    },
+    "keepAgents": {
+      "type": "boolean",
+      "title": "Keep subagents across sessions",
+      "description": "Remember each subagent (its model, task and transcript) after the session ends, so it can be resumed later.",
+      "default": true
+    }
+  }
+}
