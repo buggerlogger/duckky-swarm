@@ -97,6 +97,13 @@ names. `.claude-plugin/plugin.json` (with the `/config` settings under
   (`pendingEffort`), since its first request can come before the spawn
   returns an id. Proved live: a background subagent's replies went 3 x low
   then 7 x high. The window reads each reply's `"effort"` from the transcript.
+- The default model list is every current model of the claude-api skill's
+  table (Mythos left out: Project Glasswing only). Take new ids from that
+  table, never from memory. Not every model takes every effort:
+  `effortsFor()` in models.ts (Haiku 4.5 none, Opus/Sonnet 4.6 no xhigh);
+  set_subagent_effort, resume_subagent and a `@effort` default check it, and
+  turn.step never ADDS an effort to a request Claude Code sent without one.
+  Each model costs about 180 tokens of agent-type descriptions per session.
 - `resume_subagent` falls back to `findOnDisk()` when the store has no
   record (a cleared store, keepAgents off): Claude Code's own
   `projects/<cwd>/<session>/subagents/agent-<id>.meta.json` + `.jsonl` for

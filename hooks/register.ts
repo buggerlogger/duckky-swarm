@@ -26,7 +26,7 @@ import { bandTree, rasterKey, stagesFor, type BandAgent } from './band.tsx'
 import { refusalBrief } from './brief.ts'
 import { newestWithin, parseTranscript, refusalAt, refusalScene, sessionLines, transcriptLines } from './history.ts'
 import { launchArgv, subagentsDir } from './launcher.ts'
-import { EFFORTS, labelFor, parseEffort, parseModels, sameModel, type Effort, type ModelEntry } from './models.ts'
+import { EFFORTS, effortFits, effortsText, labelFor, parseEffort, parseModels, sameModel, type Effort, type ModelEntry } from './models.ts'
 import { allAgents, forgetAgent, retain, saveAgent, type AgentRecord } from './records.ts'
 
 const PLUGIN = 'duckky-swarm'
@@ -408,7 +408,9 @@ export const register: Register = (on, options) => {
     const agentId = e.agentId
     if (!agentId) return yield* next(e)
     const want = effortFor.get(agentId)
-    const ask = want === undefined ? e : { ...e, effort: want }
+    // never add an effort to a request Claude Code sent without one: that
+    // model takes none, and a request with one would be refused
+    const ask = want === undefined || e.effort === undefined ? e : { ...e, effort: want }
     const r0 = live.get(agentId)
     if (r0 && ask.effort !== undefined && r0.effort !== ask.effort) { r0.effort = ask.effort; restage($) }
     if (retries <= 0) return yield* next(ask)
@@ -522,6 +524,9 @@ export const register: Register = (on, options) => {
     if (!history) return { result: `Found ${r.id}, but not its transcript, so there is nothing to resume from.`, isError: true }
 
     const model = r.answeredBy ?? r.model
+    if (effort !== undefined && model && !effortFits(model, effort)) {
+      return { result: `Effort ${effort} does not fit ${r.id.slice(0, 8)}: ${effortsText(model)}. Resume it with one of those, or without an effort.`, isError: true }
+    }
     const m = models.find((x) => sameModel(x.id, model))
     const prompt = [
       r.status === 'refusal'
@@ -562,6 +567,10 @@ export const register: Register = (on, options) => {
     if (!r) return { result: `No subagent matches "${String(agent)}".`, isError: true }
     if (!live.has(r.id) || r.status !== 'running') {
       return { result: `${r.id.slice(0, 8)} is not running (${r.status}). To go on with it at effort ${effort}, resume it with resume_subagent and effort "${effort}".`, isError: true }
+    }
+    const model = r.answeredBy ?? r.model
+    if (model && !effortFits(model, effort)) {
+      return { result: `Effort ${effort} does not fit ${r.id.slice(0, 8)}: ${effortsText(model)}.`, isError: true }
     }
     effortFor.set(r.id, effort)
     $.ui.toast(`${PLUGIN}: "${r.description}" now thinks at effort ${effort}`)

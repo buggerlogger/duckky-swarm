@@ -1,6 +1,6 @@
 import type { AgentSpawnInput, CommandRunInput, On } from 'claude-code'
 import { expect, test, type Engine } from 'claude-code/testing'
-import { labelFor, parseModels } from './models.ts'
+import { effortsFor, labelFor, parseModels } from './models.ts'
 
 // the test environment has a timer at run time; its types do not declare one
 declare function setTimeout(run: () => void, ms: number): unknown
@@ -76,22 +76,39 @@ const finished = (agentId: string, model: string) => ({
   usage: { model, input_tokens: 10, output_tokens: 42, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
 }) as never
 
-test('each model in /config becomes an agent type on that exact model', async ($, on) => {
+// Every current model of the Claude API reference (2026-10), most capable
+// first; Claude Mythos 5.1 is left out: Project Glasswing only.
+const ALL = [
+  'fable-5-1', 'fable-5', 'opus-5-5', 'opus-5', 'opus-4-8', 'opus-4-7', 'opus-4-6',
+  'sonnet-5-5', 'sonnet-5', 'sonnet-4-6', 'haiku-5-5', 'haiku-4-5',
+]
+
+test('by default every current model becomes an agent type on that exact model, and a fork of it', async ($, on) => {
   const { registered } = engine(on)
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
-  expect(registered.map((r) => [r.name, r.model])).toEqual([
-    ['opus-4-6', 'claude-opus-4-6'], ['opus-4-6-fork', 'claude-opus-4-6'],
-    ['opus-5', 'claude-opus-5'], ['opus-5-fork', 'claude-opus-5'],
-    ['opus-5-5', 'claude-opus-5-5'], ['opus-5-5-fork', 'claude-opus-5-5'],
-  ])
-  expect(registered[0]?.description).toContain('Opus 4.6')
-  expect(registered[1]?.description).toContain('FORK on Opus 4.6')
+  expect(registered.map((r) => [r.name, r.model])).toEqual(ALL.flatMap((n) => [[n, `claude-${n}`], [`${n}-fork`, `claude-${n}`]]))
+  const opus46 = registered.findIndex((r) => r.name === 'opus-4-6')
+  expect(registered[opus46]?.description).toContain('Opus 4.6')
+  expect(registered[opus46 + 1]?.description).toContain('FORK on Opus 4.6')
+  expect(registered.find((r) => r.name === 'fable-5-1')?.description).toContain('Fable 5.1 (model claude-fable-5-1)')
 })
 
 test('with Fork on another model = true, no fork types are added', { options: { forkMode: 'true' } }, async ($, on) => {
   const { registered } = engine(on)
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
-  expect(registered.map((r) => r.name)).toEqual(['opus-4-6', 'opus-5', 'opus-5-5'])
+  expect(registered.map((r) => r.name)).toEqual(ALL)
+})
+
+test('each model takes only the effort levels it has', () => {
+  expect(effortsFor('claude-opus-5-5')).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+  expect(effortsFor('claude-haiku-5-5')).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+  expect(effortsFor('claude-opus-4-6[1m]')).toEqual(['low', 'medium', 'high', 'max'])   // xhigh came with Opus 4.7
+  expect(effortsFor('claude-sonnet-4-6')).toEqual(['low', 'medium', 'high', 'max'])
+  expect(effortsFor('claude-opus-4-7')).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+  expect(effortsFor('claude-opus-4-5')).toEqual(['low', 'medium', 'high'])
+  for (const none of ['claude-haiku-4-5', 'claude-haiku-4-5-20251001', 'claude-sonnet-4-5', 'claude-opus-4-1', 'claude-3-7-sonnet-latest']) expect(effortsFor(none)).toEqual([])
+  // a /config default that the model does not take is skipped, not sent
+  expect(parseModels('claude-haiku-4-5@high, claude-opus-4-6@xhigh, claude-opus-4-6@max').skipped).toEqual(['claude-haiku-4-5@high', 'claude-opus-4-6@xhigh'])
 })
 
 test('a context fork starts with the conversation so far, then its task', async ($, on) => {
@@ -295,7 +312,7 @@ test('an agent type with a default effort is registered with it', { options: { m
 })
 
 test('set_subagent_effort: a running subagent\'s next request goes out at the new effort', async ($, on) => {
-  engine(on)
+  engine(on, 'claude-opus-5-5')   // the model its type names: Opus 5.5 takes xhigh
   const sent = effortModel(on)
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
   await $.agent.spawn(spawn('duckky-swarm:opus-5-5', 'map the code'))
@@ -368,3 +385,30 @@ async function resumeLost($: Engine, on: On, query: string) {
 
 test('resume_subagent finds a subagent the store lost by its id, in Claude Code\'s own folders', ($, on) => resumeLost($, on, 'a94d12e8'))
 test('resume_subagent finds a subagent the store lost by words from its task', ($, on) => resumeLost($, on, 'add bug'))
+
+test('set_subagent_effort refuses an effort the subagent\'s model does not take', async ($, on) => {
+  engine(on, 'claude-haiku-4-5')
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn(spawn('duckky-swarm:haiku-4-5', 'list the files'))
+  const r = await $.tool.call({ tool: 'mcp__duckky-swarm__set_subagent_effort', agent: 'a1b2c3d4', effort: 'high' } as never) as { result?: unknown }
+  expect(String(r.result)).toContain('Haiku 4.5 does not take an effort')
+})
+
+test('set_subagent_effort: no xhigh for Opus 4.6, which has no such level', async ($, on) => {
+  engine(on, 'claude-opus-4-6')
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn(spawn('duckky-swarm:opus-4-6', 'map the code'))
+  const r = await $.tool.call({ tool: 'mcp__duckky-swarm__set_subagent_effort', agent: 'a1b2c3d4', effort: 'xhigh' } as never) as { result?: unknown }
+  expect(String(r.result)).toContain('Opus 4.6 takes effort low, medium, high, max')
+})
+
+test('an effort is never added to a request Claude Code sent without one', async ($, on) => {
+  engine(on, 'claude-opus-5-5')
+  const sent = effortModel(on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn(spawn('duckky-swarm:opus-5-5', 'map the code'))
+  await $.tool.call({ tool: 'mcp__duckky-swarm__set_subagent_effort', agent: 'a1b2c3d4', effort: 'max' } as never)
+  await drain($.turn.step({ ...stepOf('a1b2c3d4e5', 0), effort: undefined }) as never)
+  await drain($.turn.step(stepOf('a1b2c3d4e5', 1)) as never)
+  expect(sent).toEqual([undefined, 'max'])
+})

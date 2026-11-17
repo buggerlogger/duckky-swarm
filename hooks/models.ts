@@ -36,6 +36,27 @@ export const baseModel = (id: string) => id.replace(/\[[^\]]*\]$/, '')
 
 export const sameModel = (a: string, b: string) => baseModel(a) === baseModel(b)
 
+// The effort levels a model takes, from the Claude API reference (2026-10):
+// none on Haiku 4.5 / Sonnet 4.5 / Claude 3, three on Opus 4.5, no xhigh on
+// Opus 4.6 / Sonnet 4.6 (it arrived with Opus 4.7), all five from then on.
+// Sending one a model does not take is a 400, and the subagent stops.
+export function effortsFor(id: string): readonly string[] {
+  const m = baseModel(id)
+  if (/^claude-(3|(sonnet|haiku)-4-5|(sonnet|opus)-4($|-\d{8}|-[01]$))/.test(m)) return []
+  if (/^claude-opus-4-5/.test(m)) return ['low', 'medium', 'high']
+  if (/^claude-(opus|sonnet)-4-6/.test(m)) return ['low', 'medium', 'high', 'max']
+  return EFFORTS
+}
+
+export const effortFits = (id: string, effort: Effort) =>
+  typeof effort === 'number' ? effortsFor(id).length > 0 : effortsFor(id).includes(effort)
+
+// What to tell the main agent when an effort does not fit a model.
+export const effortsText = (id: string) => {
+  const levels = effortsFor(id)
+  return levels.length ? `${labelFor(id)} takes effort ${levels.join(', ')}` : `${labelFor(id)} does not take an effort`
+}
+
 // claude-opus-4-6 -> Opus 4.6; claude-haiku-4-5-20251001 -> Haiku 4.5
 export function labelFor(id: string): string {
   const parts = baseModel(id).replace(/^claude-/, '').replace(/-\d{8}$/, '').split('-')
@@ -60,7 +81,8 @@ export function parseModels(text: string): { models: ModelEntry[]; skipped: stri
     const id = spec.trim()
     const name = (eq >= 0 ? item.slice(0, eq) : id.replace(/^claude-/, '')).trim()
     const effort = effortText === undefined ? undefined : parseEffort(effortText)
-    if (!id || !NAME.test(name) || /\s/.test(id) || models.some((m) => m.name === name) || (effortText !== undefined && effort === undefined)) {
+    const effortBad = effortText !== undefined && (effort === undefined || !effortFits(id, effort))
+    if (!id || !NAME.test(name) || /\s/.test(id) || models.some((m) => m.name === name) || effortBad) {
       skipped.push(item)
       continue
     }
