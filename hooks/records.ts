@@ -35,6 +35,16 @@ export type AgentRecord = {
   lastAnswer?: string
   /** The subagent this one resumed, when it was started by resume_subagent. */
   resumedFrom?: string
+  /** What it is doing now (reading, editing, ...): its Clawd acts it out. */
+  activity?: string
+  /** Since when (ms): a long command turns into a tea break, a test result fades. */
+  activityAt?: number
+  /** How many of its responses the model refused (each one asked again). */
+  refusals?: number
+  /** It ran in the background: the agent that started it was not waiting on its result. */
+  background?: boolean
+  /** The effort its model requests were last sent with (how hard it thinks). */
+  effort?: string | number
 }
 
 const PREFIX = 'agent:'

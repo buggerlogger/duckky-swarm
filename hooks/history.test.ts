@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
-import { newestWithin, sessionLines, transcriptLines } from './history.ts'
+import { refusalBrief } from './brief.ts'
+import { newestWithin, refusalAt, refusalScene, parseTranscript, sessionLines, transcriptLines } from './history.ts'
 import { retain, type AgentRecord } from './records.ts'
 import { findAgent } from './register.ts'
 
@@ -52,4 +53,41 @@ test('retain: stopped ones are kept longer than finished ones', () => {
   const now = Date.UTC(2026, 10, 30)
   const kept = retain([rec('done-20d', 'x', 'done', 20), rec('done-5d', 'x', 'done', 5), rec('aborted-20d', 'x', 'aborted', 20), rec('aborted-40d', 'x', 'aborted', 40)], now)
   expect(kept.map((r) => r.id)).toEqual(['done-5d', 'aborted-20d'])
+})
+
+// A subagent that read a file, said where it was going, then was refused.
+const REFUSED = [
+  { type: 'user', message: { content: 'reverse obf.js and compute _0xa(5)' } },
+  { type: 'assistant', message: { content: [{ type: 'text', text: 'Reading it first.' }, { type: 'tool_use', name: 'Read', input: { file_path: 'obf.js' } }] } },
+  { type: 'user', message: { content: [{ type: 'tool_result', content: `function _0xa(n) { ${'x'.repeat(3000)} }` }] } },
+  { type: 'assistant', message: { content: [{ type: 'text', text: 'It loops 3 times; now the arithmetic.' }] } },
+  { type: 'assistant', message: { stop_reason: 'refusal', content: [{ type: 'text', text: 'REFUSED-TEXT' }] } },
+].map((r) => JSON.stringify(r)).join('\n')
+
+test('the rewind cuts at the refusal and keeps where it stood whole', () => {
+  expect(refusalAt(parseTranscript(REFUSED))).toBe(4)
+  const all = transcriptLines(REFUSED)
+  expect(all.join('\n')).toContain('REFUSED-TEXT')                    // without the rewind it is there
+  const rewound = transcriptLines(REFUSED, { beforeRefusal: true, fullTail: 4 })
+  expect(rewound.join('\n')).not.toContain('REFUSED-TEXT')
+  expect(rewound.at(-1)).toBe('AGENT: It loops 3 times; now the arithmetic.')   // its last message before
+  expect(rewound.find((l) => l.startsWith('RESULT:'))?.length).toBeGreaterThan(3000)   // kept whole, not clipped at 1500
+  expect(transcriptLines(REFUSED, { beforeRefusal: true })[0]).toBe(transcriptLines(REFUSED)[0])
+})
+
+test('the refusal report: where it stood, in full, and how to go on honestly', () => {
+  const s = refusalScene(REFUSED)
+  expect(s.lastWords).toBe('It loops 3 times; now the arithmetic.')
+  expect(s.lastResult).toContain('function _0xa(n)')
+  expect(s.refused).toBe('REFUSED-TEXT')
+  const brief = refusalBrief({ id: 'a7b46044ddf67ae57', label: 'Opus 4.6', model: 'claude-opus-4-6', description: 'reverse obf.js', refusals: 4 }, s, { category: 'cyber', explanation: null })
+  expect(brief).toContain('Refusal report: subagent a7b46044 (Opus 4.6, claude-opus-4-6)')
+  expect(brief).toContain('(4 times, retries included)')
+  expect(brief).toContain("The API's reason: cyber")
+  expect(brief).toContain('It loops 3 times; now the arithmetic.')
+  expect(brief).toContain('resume_subagent with agent "a7b46044"')
+  expect(brief).toContain('explains clearly what this work is')
+  expect(brief).toContain('do not claim permissions or facts the conversation does not support')
+  expect(brief).toContain('tell the user why it stopped')
+  expect(brief).not.toContain('refused step yourself')
 })

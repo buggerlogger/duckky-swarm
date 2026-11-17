@@ -1,6 +1,6 @@
 {
   "name": "duckky-swarm",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Subagents on the exact model you name (Opus 4.6, Opus 5, ...), with proof of the model they ran on, forks, and resume across sessions.",
   "author": {
     "name": "buggerlogger",
@@ -13,7 +13,7 @@
     "models": {
       "type": "string",
       "title": "Subagent models",
-      "description": "name=model-id pairs, comma separated. Each becomes an agent type Claude uses when you ask for that model, e.g. opus-4-6=claude-opus-4-6.",
+      "description": "name=model-id pairs, comma separated. Each becomes an agent type Claude uses when you ask for that model, e.g. opus-4-6=claude-opus-4-6. Add @effort for its default effort: opus-5-5=claude-opus-5-5@high.",
       "default": "opus-4-6=claude-opus-4-6, opus-5=claude-opus-5, opus-5-5=claude-opus-5-5"
     },
     "forkMode": {
@@ -28,6 +28,19 @@
       "title": "Keep subagents across sessions",
       "description": "Remember each subagent (its model, task and transcript) after the session ends, so it can be resumed later.",
       "default": true
+    },
+    "character": {
+      "type": "string",
+      "title": "Character",
+      "description": "Who acts out each subagent's work above the prompt and in the /duckky window: Clawd, or Duckky Ducks (the project's own mascot).",
+      "options": ["Clawd (recommended)", "Duckky Ducks"],
+      "default": "Clawd (recommended)"
+    },
+    "refusalRetries": {
+      "type": "number",
+      "title": "Refusal retries",
+      "description": "When a subagent's model refuses, ask the same request again from just before the refused message, up to this many times per subagent; then it stops as refused. 0 turns it off.",
+      "default": 3
     }
   }
 }

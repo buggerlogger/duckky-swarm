@@ -59,25 +59,74 @@ const blockText = (content: unknown): string =>
     : Array.isArray(content) ? content.map((b: Block) => (typeof b === 'string' ? b : b?.text ?? '')).join('\n')
     : ''
 
-// A subagent's transcript file (agent-<id>.jsonl) -> lines
-export function transcriptLines(jsonl: string): string[] {
-  const lines: string[] = []
+type Rec = { type?: string; isMeta?: boolean; message?: { content?: unknown; stop_reason?: string } }
+
+// The conversation records of a transcript, in order (the rest skipped).
+export function parseTranscript(jsonl: string): Rec[] {
+  const recs: Rec[] = []
   for (const raw of jsonl.split('\n')) {
     if (!raw.trim()) continue
-    let r: { type?: string; isMeta?: boolean; message?: { content?: unknown } }
+    let r: Rec
     try { r = JSON.parse(raw) } catch { continue }
     if ((r.type !== 'user' && r.type !== 'assistant') || r.isMeta || !r.message) continue
+    recs.push(r)
+  }
+  return recs
+}
+
+// Where the model refused: the first reply that stopped on a refusal; -1 for none.
+export function refusalAt(recs: readonly Rec[]): number {
+  return recs.findIndex((r) => r.type === 'assistant' && r.message?.stop_reason === 'refusal')
+}
+
+const blocks = (r: Rec) => (Array.isArray(r.message?.content) ? r.message.content : []) as Block[]
+const FULL = 20_000   // what "in full" means for the newest entries
+
+// A subagent's transcript file (agent-<id>.jsonl) -> lines. `beforeRefusal`
+// rewinds it to the agent's last message before its model refused: the
+// refused reply and everything after it are left out. The newest `fullTail`
+// lines are kept whole (up to FULL characters): they are where it stood.
+export function transcriptLines(jsonl: string, { beforeRefusal = false, fullTail = 0 } = {}): string[] {
+  let recs = parseTranscript(jsonl)
+  const cut = beforeRefusal ? refusalAt(recs) : -1
+  if (cut >= 0) recs = recs.slice(0, cut)
+  const entries: { line: (n: number) => string }[] = []
+  for (const r of recs) {
     const who = r.type === 'user' ? 'USER' : 'AGENT'
-    const content = r.message.content
+    const content = r.message?.content
     if (typeof content === 'string') {
-      if (content.trim()) lines.push(`${who}: ${clip(content, CLIP_TEXT)}`)
+      if (content.trim()) entries.push({ line: (n) => `${who}: ${clip(content, Math.max(n, CLIP_TEXT))}` })
       continue
     }
-    for (const b of (Array.isArray(content) ? content : []) as Block[]) {
-      if (b.type === 'text' && b.text?.trim()) lines.push(`${who}: ${clip(b.text, CLIP_TEXT)}`)
-      else if (b.type === 'tool_use') lines.push(`AGENT used ${b.name} ${clip(json(b.input), CLIP_INPUT)}`)
-      else if (b.type === 'tool_result') lines.push(`RESULT: ${clip(blockText(b.content), CLIP_RESULT)}`)
+    for (const b of blocks(r)) {
+      if (b.type === 'text' && b.text?.trim()) { const t = b.text; entries.push({ line: (n) => `${who}: ${clip(t, Math.max(n, CLIP_TEXT))}` }) }
+      else if (b.type === 'tool_use') { const u = json(b.input); entries.push({ line: (n) => `AGENT used ${b.name} ${clip(u, Math.max(n, CLIP_INPUT))}` }) }
+      else if (b.type === 'tool_result') { const t = blockText(b.content); entries.push({ line: (n) => `RESULT: ${clip(t, Math.max(n, CLIP_RESULT))}` }) }
     }
   }
-  return lines
+  return entries.map((e, i) => e.line(i >= entries.length - fullTail ? FULL : 0))
+}
+
+// Where a refused subagent stood, for the agent that started it: its last
+// message before the refusal (its words and tool calls, in full), the last
+// tool result it had been given, and any text of the refused reply.
+export function refusalScene(jsonl: string): { lastWords: string; lastCalls: string[]; lastResult: string; refused: string } {
+  const recs = parseTranscript(jsonl)
+  let cut = refusalAt(recs)
+  if (cut < 0) cut = recs.length   // no reply marked refused: everything is "before"
+  const refused = cut < recs.length ? blocks(recs[cut]!).filter((b) => b.type === 'text').map((b) => b.text ?? '').join('\n').trim() : ''
+  let lastWords = ''
+  const lastCalls: string[] = []
+  let lastResult = ''
+  for (let i = cut - 1; i >= 0 && (!lastWords && !lastCalls.length || !lastResult); i--) {
+    const r = recs[i]!
+    if (r.type === 'assistant' && !lastWords && !lastCalls.length) {
+      lastWords = clip(blocks(r).filter((b) => b.type === 'text').map((b) => b.text ?? '').join('\n').trim(), FULL)
+      for (const b of blocks(r)) if (b.type === 'tool_use') lastCalls.push(`${b.name} ${clip(json(b.input), 2000)}`)
+    } else if (r.type === 'user' && !lastResult) {
+      const res = blocks(r).filter((b) => b.type === 'tool_result').map((b) => blockText(b.content)).join('\n').trim()
+      if (res) lastResult = clip(res, 8000)
+    }
+  }
+  return { lastWords, lastCalls, lastResult, refused: clip(refused, 4000) }
 }
