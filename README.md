@@ -31,7 +31,7 @@ Desktop app has no `/plugin`. Hit + by the prompt, Plugins, add marketplace `bug
 
 - "Use an Opus 4.6 subagent to review this file."
 - "Fork onto Opus 4.6." A normal fork stays on the parent model. This one copies the chat onto the model you named.
-- "Resume subagent ac82d396." Same model, same transcript. Words from the task work too.
+- "Resume subagent ac82d396." Same model, same transcript, in the background. The answer comes as a message when it's done. Words from the task work too.
 - "Opus 5.5, low effort." "Set that one's effort to high" hits the next request.
 
 `/duckky` opens a pane per subagent. `q` quits. `/duckky list` is model, task, status, id.
@@ -61,6 +61,10 @@ Clawd is the default. Duckky Ducks is the other option in `/config`. Same scenes
 node viewer/duckky-view.mjs --gallery
 node viewer/duckky-view.mjs --gallery --character ducks
 ```
+
+## Change the words
+
+Everything the plugin says to Claude is in [messages.json](messages.json): agent types, subagent prompts, fork and resume prompts, tool text, refusal reports. Edit it and save. A mistake shows a toast and that one text falls back to the built-in wording.
 
 Scenes, `/config`, effort, refusals, and the test commands are in [GUIDE.md](GUIDE.md).
 

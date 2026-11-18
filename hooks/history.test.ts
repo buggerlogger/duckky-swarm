@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { refusalBrief } from './brief.ts'
+import { hookFailed, refusalBrief, resumedReport } from './brief.ts'
 import { newestWithin, refusalAt, refusalScene, parseTranscript, sessionLines, transcriptLines } from './history.ts'
 import { retain, type AgentRecord } from './records.ts'
 import { findAgent } from './register.ts'
@@ -90,4 +90,18 @@ test('the refusal report: where it stood, in full, and how to go on honestly', (
   expect(brief).toContain('do not claim permissions or facts the conversation does not support')
   expect(brief).toContain('tell the user why it stopped')
   expect(brief).not.toContain('refused step yourself')
+})
+
+test('a resumed subagent\'s answer reaches the main agent as a message of its own, whatever its ending', () => {
+  const base = { from: 'f1e2d3c4b5a69788', id: 'c0ffee1234567890', label: 'Opus 5' }
+  expect(resumedReport({ ...base, ending: 'done', answer: 'The bug is on line 2.' }))
+    .toBe('[duckky-swarm] Resumed subagent f1e2d3c4 (now c0ffee12, Opus 5) finished. Its answer:\n\nThe bug is on line 2.')
+  expect(resumedReport({ ...base, ending: 'aborted', answer: '' })).toBe('[duckky-swarm] Resumed subagent f1e2d3c4 (now c0ffee12, Opus 5) was stopped before it finished.')
+  expect(resumedReport({ ...base, ending: 'max_turns', answer: 'half way' })).toContain('ended (max_turns) before it finished. Its last words:\n\nhalf way')
+  expect(resumedReport({ ...base, ending: 'done', answer: '  ' })).toContain('(it ended without a word)')
+})
+
+test('a failed hook of the plugin\'s own tools says why, not that no hook answered', () => {
+  expect(hookFailed('resume_subagent', { kind: 'timeout', budget: 1000 })).toBe('duckky-swarm: resume_subagent failed: it ran past the 10 s a hook has')
+  expect(hookFailed('set_subagent_effort', { kind: 'throw', message: 'boom', budget: 1000 })).toBe('duckky-swarm: set_subagent_effort failed: boom')
 })

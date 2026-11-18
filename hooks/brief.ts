@@ -11,7 +11,29 @@
 // what the conversation and the project's instructions say). A refusal can
 // also be right: then the work stops and the person is told why.
 
+import type { HookFailure } from 'claude-code'
+import { text } from './messages.ts'
+
 export type BriefFor = { id: string; label: string; model: string; description: string; refusals: number }
+
+// What the main agent reads when a subagent it resumed ends: resume_subagent
+// returns at once (a hook has 10 s of its own time), so the answer comes
+// later, as a message of its own.
+export type Resumed = { from: string; id: string; label: string; ending: string; answer: string }
+
+export function resumedReport(r: Resumed): string {
+  const answer = r.answer.trim()
+  const who = { from: r.from.slice(0, 8), id: r.id.slice(0, 8), label: r.label }
+  if (r.ending === 'done') return text('resumedAnswer', 'finished', { ...who, answer: answer || text('resumedAnswer', 'noWords') })
+  const lastWords = answer ? text('resumedAnswer', 'lastWords', { answer }) : ''
+  const how = r.ending === 'aborted' ? 'stopped' : r.ending === 'refusal' ? 'refused' : 'ended'
+  return text('resumedAnswer', how, { ...who, ending: r.ending, lastWords })
+}
+
+// What one of the plugin's own tools answers when its hook failed: said
+// plainly, where the engine's own default only says no hook answered.
+export const hookFailed = (tool: string, error: HookFailure) =>
+  text('hookFailed', 'text', { tool, why: error.kind === 'timeout' ? text('hookFailed', 'timeout') : error.message ?? text('hookFailed', 'threw') })
 export type Scene = { lastWords: string; lastCalls: string[]; lastResult: string; refused: string }
 export type Refusal = { category: string | null; explanation: string | null } | null
 
@@ -19,16 +41,16 @@ const block = (title: string, body: string) => (body ? `\n${title}\n${body}\n` :
 
 export function refusalBrief(a: BriefFor, s: Scene, refusal: Refusal): string {
   const short = a.id.slice(0, 8)
-  const why = refusal && (refusal.category || refusal.explanation) ? `\nThe API's reason: ${[refusal.category, refusal.explanation].filter(Boolean).join(': ')}\n` : ''
+  const reason = refusal && (refusal.category || refusal.explanation) ? [refusal.category, refusal.explanation].filter(Boolean).join(': ') : ''
   return [
-    `[duckky-swarm] Refusal report: subagent ${short} (${a.label}, ${a.model}) stopped partway; its model refused` +
-      `${a.refusals > 1 ? ` (${a.refusals} times, retries included)` : ''}. Its task: "${a.description}".`,
-    why,
-    block('Its last message before the refusal:', [s.lastWords, ...s.lastCalls.map((c) => `-> called ${c}`)].filter(Boolean).join('\n')),
-    block('The last tool result it had been given:', s.lastResult),
-    block('What came back in the refused reply:', s.refused),
-    '\nWhat to do: decide whether this work should go on.',
-    `- If it should, and the subagent was missing context: call resume_subagent with agent "${short}" and a message that explains clearly what this work is: the user's goal, the scope, and the context from this conversation and the project's instructions that the subagent never saw. Describe it as it is; do not claim permissions or facts the conversation does not support. It rewinds to its last message before the refusal (the refused reply is cut out) and carries on, on ${a.model}.`,
-    '- If it should not, tell the user why it stopped instead of resuming it.',
+    text('refusalReport', 'header', {
+      id: short, label: a.label, model: a.model, task: a.description,
+      times: a.refusals > 1 ? text('refusalReport', 'times', { count: a.refusals }) : '',
+    }),
+    reason ? `\n${text('refusalReport', 'reason', { reason })}\n` : '',
+    block(text('refusalReport', 'lastMessage'), [s.lastWords, ...s.lastCalls.map((call) => text('refusalReport', 'called', { call }))].filter(Boolean).join('\n')),
+    block(text('refusalReport', 'lastResult'), s.lastResult),
+    block(text('refusalReport', 'refusedReply'), s.refused),
+    text('refusalReport', 'whatToDo', { id: short, model: a.model }),
   ].filter(Boolean).join('\n')
 }

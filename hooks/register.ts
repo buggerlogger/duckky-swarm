@@ -23,10 +23,11 @@ import type { EngineInterface, Register, RenderElement, TurnStepChunk } from 'cl
 import { characterFor } from '../characters/index.mjs'
 import { activityOf, shownActivity } from '../viewer/model.mjs'
 import { bandTree, rasterKey, stagesFor, type BandAgent } from './band.tsx'
-import { refusalBrief } from './brief.ts'
+import { hookFailed, refusalBrief, resumedReport } from './brief.ts'
+import { text, useMessages } from './messages.ts'
 import { newestWithin, parseTranscript, refusalAt, refusalScene, sessionLines, transcriptLines } from './history.ts'
 import { launchArgv, subagentsDir } from './launcher.ts'
-import { EFFORTS, effortFits, effortsText, labelFor, parseEffort, parseModels, sameModel, type Effort, type ModelEntry } from './models.ts'
+import { EFFORTS, effortFits, effortsFor, effortsText, labelFor, parseEffort, parseModels, sameModel, type Effort, type ModelEntry } from './models.ts'
 import { allAgents, forgetAgent, retain, saveAgent, type AgentRecord } from './records.ts'
 
 const PLUGIN = 'duckky-swarm'
@@ -34,26 +35,20 @@ const PLUGIN = 'duckky-swarm'
 const FORK_BUDGET = 120_000
 const RESUME_BUDGET = 120_000
 
-const descriptionFor = (m: ModelEntry) =>
-  `Runs the task on ${m.label} (model ${m.id}). Use this agent type whenever the user asks for a subagent, ` +
-  `agent, agents or a swarm on ${m.label}, ${m.id} or "${m.name}": the Agent tool's model parameter cannot ` +
-  'select this exact model, this type can. Starts fresh; same tools as the parent. ' +
-  `Its effort (how hard it thinks) is the Agent call's \`effort\` (${EFFORTS.join(', ')})${m.effort ? `, ${m.effort} when left out` : ''}; ` +
-  'set_subagent_effort changes it while it runs.'
+// The words of every text sent to Claude are in messages.json (hooks/messages.ts).
+const descriptionFor = (m: ModelEntry) => {
+  const levels = effortsFor(m.id)
+  const effort = levels.length
+    ? text('agentType', 'effort', { levels: levels.join(', '), whenLeftOut: m.effort === undefined ? '' : text('agentType', 'whenLeftOut', { effort: m.effort }) })
+    : text('agentType', 'noEffort', { label: m.label })
+  return text('agentType', 'description', { label: m.label, id: m.id, name: m.name, effort })
+}
 
-const forkDescriptionFor = (m: ModelEntry) =>
-  `A FORK on ${m.label} (model ${m.id}): starts with this whole conversation as its context, then does its task. ` +
-  `Use it when the user asks to fork onto ${m.label}, ${m.id} or "${m.name}" (a built-in fork cannot change model).`
+const forkDescriptionFor = (m: ModelEntry) => text('agentType', 'forkDescription', { label: m.label, id: m.id, name: m.name })
 
 // An agent type's prompt REPLACES the session's system prompt, so it says
 // everything a subagent needs on its own.
-const promptFor = (m: ModelEntry) => [
-  `You are a subagent of Claude Code, running on ${m.label} (${m.id}) because the user asked for that model.`,
-  'Do the task you are given completely with the tools you have, then end with a clear report of what you found ' +
-    'or changed: the agent that started you sees only your final message.',
-  'Be concrete: file paths, line numbers, commands and their real output. Never claim a result you did not check.',
-  'You cannot ask the user anything. Where the task is ambiguous, take the most reasonable reading and say which.',
-].join('\n\n')
+const promptFor = (m: ModelEntry) => text('agentType', 'prompt', { label: m.label, id: m.id })
 
 const ICON: Record<AgentRecord['status'], string> = { running: '●', done: '✓', aborted: '■', error: '✗', refusal: '✗' }
 
@@ -61,7 +56,9 @@ const ICON: Record<AgentRecord['status'], string> = { running: '●', done: '✓
 // ⛔ It lives up here, not inside register: the engine refuses a module that
 // passes `$` to anything but a function declared at the top of the file.
 const live = new Map<string, AgentRecord>()   // this session's, by agent id
-const waiting = new Map<string, (answer: string) => void>()   // resumed agents a tool call awaits
+// resumed agent id -> the subagent it resumed: its answer goes to the main
+// agent as a message when it ends (resume_subagent itself returns at once)
+const delivering = new Map<string, { from: string; label: string }>()
 let models: ModelEntry[] = []
 let keep = true
 let sessionId = ''
@@ -244,11 +241,16 @@ async function openSwarm($: EngineInterface): Promise<string> {
 
 async function forkPrompt($: EngineInterface, m: ModelEntry, task: string): Promise<string> {
   const history = newestWithin(sessionLines(await $.session.messages()), FORK_BUDGET)
-  return [
-    `You are a fork of the conversation below, now running on ${m.label} (${m.id}). You have its context;`,
-    'the person and the main agent see your work only when you report.',
-    '<conversation>', history, '</conversation>', '', 'Your task:', task,
-  ].join('\n')
+  return text('fork', 'prompt', { label: m.label, id: m.id, conversation: history, task })
+}
+
+// The texts sent to Claude, from messages.json at the plugin's root: the
+// built-in ones where it has none, and each mistake in it told once.
+async function loadMessages($: EngineInterface) {
+  const file = await $.fs.read(`${$.plugin.root}/messages.json`).then((t) => String(t), () => null)
+  const problems = useMessages(file)
+  for (const p of problems) $.ui.log(`${PLUGIN}: ${p}`)
+  if (problems.length) $.ui.toast(`${PLUGIN}: messages.json: ${problems[0]}${problems.length > 1 ? ` (and ${problems.length - 1} more, in the log)` : ''}`)
 }
 
 export const register: Register = (on, options) => {
@@ -265,6 +267,7 @@ export const register: Register = (on, options) => {
     const started = await next(e)
     cwd = e.cwd
     sessionId = await $.session.id().catch(() => '')
+    await loadMessages($)   // before anything below sends a text
     $.clock.every(TICK_MS, () => { void animate($) })
     // $.agent.register rejects until the session is bound: after next(e)
     for (const m of models) {
@@ -274,16 +277,13 @@ export const register: Register = (on, options) => {
     if (parsed.skipped.length) $.ui.log(`${PLUGIN}: /config models skipped ${parsed.skipped.map((s) => `"${s}"`).join(', ')}`)
     await $.tool.register({
       name: 'resume_subagent',
-      description:
-        'Resume a subagent from this session or an EARLIER one: it continues on the same model, with its earlier ' +
-        'transcript as context, and answers your message. Use it when the user asks to resume, continue or go back ' +
-        'to a subagent. `agent` is its id (the first 8 characters are enough, as /duckky shows) or words from its task.',
+      description: text('resumeTool', 'description'),
       inputSchema: {
         type: 'object',
         properties: {
-          agent: { type: 'string', description: 'The subagent: its id or id prefix, or words from its task' },
-          message: { type: 'string', description: 'What to tell it now' },
-          effort: { type: 'string', description: `Optional: how hard it thinks from now on (${EFFORTS.join(', ')}, or a token budget)` },
+          agent: { type: 'string', description: text('resumeTool', 'agent') },
+          message: { type: 'string', description: text('resumeTool', 'message') },
+          effort: { type: 'string', description: text('resumeTool', 'effort', { levels: EFFORTS.join(', ') }) },
         },
         required: ['agent', 'message'],
       },
@@ -291,16 +291,12 @@ export const register: Register = (on, options) => {
     })
     await $.tool.register({
       name: 'set_subagent_effort',
-      description:
-        'Change how hard a RUNNING subagent thinks (its effort): from its next model request on. Use it when the user ' +
-        'asks to raise or lower a subagent\'s effort, or when a subagent needs more (or less) thinking for its task. ' +
-        `\`agent\` is its id (the first 8 characters are enough) or words from its task; \`effort\` is ${EFFORTS.join(', ')}, ` +
-        'or a token budget. For a subagent that has finished, resume it with resume_subagent and an effort instead.',
+      description: text('effortTool', 'description', { levels: EFFORTS.join(', ') }),
       inputSchema: {
         type: 'object',
         properties: {
-          agent: { type: 'string', description: 'The subagent: its id or id prefix, or words from its task' },
-          effort: { type: 'string', description: `${EFFORTS.join(', ')}, or a token budget` },
+          agent: { type: 'string', description: text('effortTool', 'agent') },
+          effort: { type: 'string', description: text('effortTool', 'effort', { levels: EFFORTS.join(', ') }) },
         },
         required: ['agent', 'effort'],
       },
@@ -448,7 +444,7 @@ export const register: Register = (on, options) => {
     const to = String((e as unknown as { to?: unknown }).to ?? '').toLowerCase()
     const r = to.length >= 4 ? [...live.values()].find((x) => x.status === 'refusal' && x.id.toLowerCase().startsWith(to)) : undefined
     if (!r) return next(e)
-    return { deny: `${PLUGIN}: ${r.id.slice(0, 8)} stopped on a refusal. Resume it with resume_subagent (agent "${r.id.slice(0, 8)}"), which rewinds it to its last message before the refusal; a SendMessage would carry the refused reply on.` }
+    return { deny: text('sendMessage', 'refused', { id: r.id.slice(0, 8) }) }
   }).catch(($, e, next) => (next.called ? next(e) : next(e)))
 
   on('classic.SubagentStop', async ($, e, next) => {
@@ -492,10 +488,15 @@ export const register: Register = (on, options) => {
       await write($, r)
       showRunning($)
     }
-    const waiter = e.agentId ? waiting.get(e.agentId) : undefined
-    if (waiter && e.agentId) {
-      waiting.delete(e.agentId)
-      waiter(e.answer)
+    // A resumed agent ended: its answer to the main agent, as a message of its
+    // own (a refusal already sent its report above).
+    const resumed = e.agentId ? delivering.get(e.agentId) : undefined
+    if (resumed && e.agentId) {
+      delivering.delete(e.agentId)
+      const ending = e.isAborted ? 'aborted' : e.reason === 'answer' ? 'done' : e.reason
+      if (ending !== 'refusal' || !r?.background) {
+        await $.prompt.submit({ text: resumedReport({ ...resumed, id: e.agentId, ending, answer: e.answer }) }).catch(() => undefined)
+      }
     }
     return done
   })
@@ -505,7 +506,7 @@ export const register: Register = (on, options) => {
     const { agent, message, effort: effortText } = e as unknown as { agent?: unknown; message?: unknown; effort?: unknown }
     const effort = effortText === undefined || effortText === '' ? undefined : parseEffort(effortText)
     if (effortText !== undefined && effortText !== '' && effort === undefined) {
-      return { result: `"${String(effortText)}" is not an effort: use ${EFFORTS.join(', ')}, or a token budget.`, isError: true }
+      return { result: text('effort', 'notAnEffort', { effort: String(effortText), levels: EFFORTS.join(', ') }), isError: true }
     }
     const rows = await known($)
     let r = findAgent(rows, String(agent ?? ''))
@@ -516,66 +517,84 @@ export const register: Register = (on, options) => {
     }
     if (!r) {
       const recent = rows.slice(0, 5).map((x) => `${x.id.slice(0, 8)} ${x.label}: ${x.description}`).join('; ')
-      return { result: `No subagent matches "${String(agent)}". Recent: ${recent || 'none kept'}`, isError: true }
+      return { result: text('resumeTool', 'noMatch', { query: String(agent), recent: recent || text('resumeTool', 'noneKept') }), isError: true }
     }
     const jsonl = await readTranscript($, r)
     // rewound to its last message before a refusal, the newest entries whole
-    const history = jsonl ? newestWithin(transcriptLines(jsonl, { beforeRefusal: true, fullTail: 4 }), RESUME_BUDGET) : r.lastAnswer ? `AGENT (its last answer): ${r.lastAnswer}` : ''
-    if (!history) return { result: `Found ${r.id}, but not its transcript, so there is nothing to resume from.`, isError: true }
+    const history = jsonl
+      ? newestWithin(transcriptLines(jsonl, { beforeRefusal: true, fullTail: 4 }), RESUME_BUDGET)
+      : r.lastAnswer ? text('resumePrompt', 'lastAnswerOnly', { answer: r.lastAnswer }) : ''
+    if (!history) return { result: text('resumeTool', 'noTranscript', { id: r.id }), isError: true }
 
     const model = r.answeredBy ?? r.model
     if (effort !== undefined && model && !effortFits(model, effort)) {
-      return { result: `Effort ${effort} does not fit ${r.id.slice(0, 8)}: ${effortsText(model)}. Resume it with one of those, or without an effort.`, isError: true }
+      return { result: text('resumeTool', 'effortDoesNotFit', { effort, id: r.id.slice(0, 8), fits: effortsText(model) }), isError: true }
     }
     const m = models.find((x) => sameModel(x.id, model))
-    const prompt = [
-      r.status === 'refusal'
-        ? `You are resuming your own earlier work, as a subagent on ${r.label} (${model}). Below is your transcript up to your last message before you stopped; the reply where you stopped is not part of it. The agent that started you has read where you stood and sends the message after it. Carry on from there.`
-        : `You are resuming earlier work: a subagent on ${r.label} (${model}). Its transcript is below; continue from where it stopped.`,
-      '<earlier-transcript>', history, '</earlier-transcript>', '', 'New instruction:', String(message ?? 'Continue.'),
-    ].join('\n')
+    const prompt = text('resumePrompt', 'body', {
+      intro: text('resumePrompt', r.status === 'refusal' ? 'introAfterRefusal' : 'intro', { label: r.label, model }),
+      history,
+      message: String(message ?? text('resumePrompt', 'defaultMessage')),
+    })
     if (effort !== undefined) pendingEffort.set(promptKey(prompt), effort)   // its first turn picks it up
     const spawned = await $.agent.spawn({
       prompt,
-      description: `resume: ${r.description}`.slice(0, 80),
+      description: text('resumeTool', 'agentDescription', { task: r.description }).slice(0, 80),
       ...(m ? { subagentType: `${PLUGIN}:${m.name}` } : { subagentType: 'general-purpose', model }),
     }).catch((err: Error) => ({ deny: err.message, agentId: undefined, model: undefined }))
     if (spawned.deny !== undefined || !spawned.agentId) {
       return {
-        result: `Could not resume ${r.id}: ${spawned.deny ?? `no agent started (${JSON.stringify(spawned).slice(0, 200)})`}`,
+        result: text('resumeTool', 'couldNot', { id: r.id, reason: spawned.deny ?? `no agent started (${JSON.stringify(spawned).slice(0, 200)})` }),
         isError: true,
       }
     }
     const agentId = spawned.agentId
+    // before any await: an agent that ends at once must still find it
+    delivering.set(agentId, { from: r.id, label: r.label })
     const now = live.get(agentId)
-    if (now) { now.resumedFrom = r.id; await write($, now) }
+    if (now) { now.resumedFrom = r.id; now.background = true; await write($, now) }
     r.resumes += 1
     if (keep) await saveAgent($, r)
-    const answer = await new Promise<string>((resolve) => waiting.set(agentId, resolve))
-    // ⛔ a plugin tool's result is a string (or content blocks): an object was
-    // refused live as "does not match its output shape", after the agent ran
-    return { result: `${answer}\n\n(resumed ${r.id.slice(0, 8)} as ${agentId.slice(0, 8)}, on ${spawned.model}${effort === undefined ? '' : `, effort ${effort}`})` }
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: `${PLUGIN}: resume_subagent failed` }))
+    // ⛔ Returns at once, the answer coming later as a message (turn.complete
+    // above). A hook has 10 s of its OWN time, and waiting on an agent is no
+    // `$` call, so the clock runs through it: a resume that awaited the answer
+    // was cut off at 10.4 s live while the resumed agent worked 4.5 minutes
+    // on, its answer lost, and the main agent started the same work again.
+    // ⛔ A plugin tool's result is a string (or content blocks): an object was
+    // refused live as "does not match its output shape".
+    return {
+      result: text('resumeTool', 'started', {
+        from: r.id.slice(0, 8), id: agentId.slice(0, 8), model: spawned.model,
+        withEffort: effort === undefined ? '' : text('resumeTool', 'withEffort', { effort }),
+      }),
+    }
+  }).catch(($, e, next) => ({ result: hookFailed('resume_subagent', next.error), isError: true }))
 
   // The main agent turns a running subagent's effort up or down: from its
   // next model request on (the turn.step hook applies it).
   on('tool.call', { tool: 'mcp__duckky-swarm__set_subagent_effort' }, async ($, e) => {
     const { agent, effort: effortText } = e as unknown as { agent?: unknown; effort?: unknown }
     const effort = parseEffort(effortText)
-    if (effort === undefined) return { result: `"${String(effortText)}" is not an effort: use ${EFFORTS.join(', ')}, or a token budget.`, isError: true }
+    if (effort === undefined) return { result: text('effort', 'notAnEffort', { effort: String(effortText), levels: EFFORTS.join(', ') }), isError: true }
     const r = findAgent(await known($), String(agent ?? ''))
-    if (!r) return { result: `No subagent matches "${String(agent)}".`, isError: true }
+    if (!r) return { result: text('effortTool', 'noMatch', { query: String(agent) }), isError: true }
+    const id = r.id.slice(0, 8)
     if (!live.has(r.id) || r.status !== 'running') {
-      return { result: `${r.id.slice(0, 8)} is not running (${r.status}). To go on with it at effort ${effort}, resume it with resume_subagent and effort "${effort}".`, isError: true }
+      return { result: text('effortTool', 'notRunning', { id, status: r.status, effort }), isError: true }
     }
     const model = r.answeredBy ?? r.model
     if (model && !effortFits(model, effort)) {
-      return { result: `Effort ${effort} does not fit ${r.id.slice(0, 8)}: ${effortsText(model)}.`, isError: true }
+      return { result: text('effortTool', 'doesNotFit', { effort, id, fits: effortsText(model) }), isError: true }
     }
     effortFor.set(r.id, effort)
     $.ui.toast(`${PLUGIN}: "${r.description}" now thinks at effort ${effort}`)
-    return { result: `${r.id.slice(0, 8)} ("${r.description}", ${r.label}) thinks at effort ${effort} from its next model request on${r.effort === undefined ? '' : ` (it was ${r.effort})`}.` }
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: `${PLUGIN}: set_subagent_effort failed` }))
+    return {
+      result: text('effortTool', 'set', {
+        id, task: r.description, label: r.label, effort,
+        was: r.effort === undefined ? '' : text('effortTool', 'was', { effort: r.effort }),
+      }),
+    }
+  }).catch(($, e, next) => ({ result: hookFailed('set_subagent_effort', next.error), isError: true }))
 
   on('command.run', { command: 'duckky' }, async ($, e) => {
     if (e.args.trim().toLowerCase() !== 'list') return { text: await openSwarm($) }

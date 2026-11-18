@@ -4,6 +4,8 @@
 // The model list from /config, as agent types. Pure: no `$`, so it is tested
 // on its own.
 
+import { text } from './messages.ts'
+
 export type ModelEntry = {
   /** The agent type's short name: `duckky-swarm:<name>`. */
   name: string
@@ -54,7 +56,7 @@ export const effortFits = (id: string, effort: Effort) =>
 // What to tell the main agent when an effort does not fit a model.
 export const effortsText = (id: string) => {
   const levels = effortsFor(id)
-  return levels.length ? `${labelFor(id)} takes effort ${levels.join(', ')}` : `${labelFor(id)} does not take an effort`
+  return levels.length ? text('effort', 'takes', { label: labelFor(id), levels: levels.join(', ') }) : text('effort', 'takesNone', { label: labelFor(id) })
 }
 
 // claude-opus-4-6 -> Opus 4.6; claude-haiku-4-5-20251001 -> Haiku 4.5

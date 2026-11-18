@@ -32,6 +32,8 @@ Not every model accepts every effort. Opus 4.5 takes `low`, `medium`, `high`. Op
 
 "Resume subagent ac82d396" or words from its task. `resume_subagent` rewinds to the last message before a refusal when that is how the turn ended.
 
+The call returns right away and the resumed subagent runs in the background. When it ends, its answer reaches the main agent as a message from the plugin. A hook gets 10 seconds of its own time, and a resume can run for minutes, so the tool can't wait for the answer. Under `claude -p` a background subagent ends with the main turn.
+
 If Keep subagents is off, or the store was cleared, the plugin looks in Claude Code's own files for this project: `projects/<cwd>/<session>/subagents/agent-<id>.meta.json` and the matching `.jsonl`.
 
 ## Effort after spawn
@@ -96,18 +98,26 @@ Clawd is the default. Duckky Ducks uses the same moves. The done duck wears sung
 
 <p align="center"><img src="assets/band.png" width="720" alt="The band above the prompt"></p>
 
+## The words: messages.json
+
+Every text sent to Claude has a key in `messages.json`, by section: `agentType`, `fork`, `resumeTool`, `resumePrompt`, `resumedAnswer`, `effortTool`, `effort`, `refusalReport`, `sendMessage`, `hookFailed`. A text is a string, or a list of strings that are its lines. `{label}`, `{id}`, `{task}` and the rest are filled in when it is sent, and each section's `_about` lists them.
+
+The plugin reads the file when a session starts. Under `claude --plugin-dir` a save reloads it. Elsewhere, run `/reload-plugins`. An installed copy lives in Claude Code's plugin cache, and an update replaces it.
+
+A text you delete uses the built-in wording in `hooks/messages.ts`. So does one with the wrong type. Invalid JSON uses all of the built-in texts. A `{name}` the text is never given stays as written. Each problem is a toast and a log line. `node --test messages.test.mjs` checks the file the same way before you start a session.
+
 ## Work on it
 
 ```
 claude --plugin-dir .          this folder as the plugin; save reloads it
 claude plugin validate .       manifest, marketplace, hooks
 claude plugin test .           hooks/*.test.ts
-node --test viewer/viewer.test.mjs characters/sprites.test.mjs
+node --test messages.test.mjs viewer/viewer.test.mjs characters/sprites.test.mjs characters/ducks.test.mjs
 node viewer/duckky-view.mjs <subagents folder> --once
 ```
 
 `claude -p "/duckky"` lists the command and then sends the text to the model. `command.run` does not fire. Agent types do work under `-p`. Run `/duckky` in an interactive session.
 
-Proof of the model is on disk: `~/.claude/projects/<cwd>/<session>/subagents/agent-<id>.meta.json` (`agentType`) and every `"model"` and `"effort"` in `agent-<id>.jsonl`.
+Proof of the model is on disk: `~/.claude/projects/<cwd>/<session>/subagents/agent-<id>.meta.json` (`agentType`) and `message.model` and `effort` on each `assistant` record of `agent-<id>.jsonl`. Don't count every `"model"` string. Claude Code's request-shape record names its advisor model too.
 
 Changing the PowerShell launch script means re-encoding it. `viewer/viewer.test.mjs` checks the constant in `hooks/launcher.ts` against that encoding.

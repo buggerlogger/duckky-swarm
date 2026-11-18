@@ -6,6 +6,17 @@ names. `.claude-plugin/plugin.json` (with the `/config` settings under
 `hooks/hooks.json`), and `.claude-plugin/marketplace.json` with
 `"source": "./"`, so the repo itself is the marketplace.
 
+- `messages.json` (root) + `hooks/messages.ts`: EVERY text sent to Claude
+  (agent types, subagent/fork/resume prompts, tool descriptions and results,
+  refusal report, resumed answer). Code asks `text(section, key, vars)` and
+  never writes agent-facing words itself; a new text gets a key in
+  `DEFAULT_MESSAGES` AND in messages.json (regenerate the file from the
+  defaults rather than hand-copying). Read at session.start
+  (`loadMessages`), laid over the built-in texts key by key; each mistake is
+  a toast + log line and only that text falls back. `fill` is one pass, so a
+  value holding "{task}" is never filled again. `messages.test.mjs` (plain
+  Node) checks the file as edited. Toasts and /duckky output are for the
+  person, not Claude, and stay in code.
 - `hooks/models.ts`: the /config model list -> agent types (pure, tested alone)
 - `hooks/history.ts`: a conversation / transcript as text within a budget (pure)
 - `hooks/records.ts`: one `$.store` record per subagent, key `agent:<id>`
@@ -147,8 +158,11 @@ names. `.claude-plugin/plugin.json` (with the `/config` settings under
 - Context fork: turn 1 gives a code word (`--session-id X`); turn 2
   (`--resume X`) "fork onto Opus 4.6 and have the fork tell me the code word".
 - Resume: a NEW session, "resume subagent <id> and ask it the code word".
-Proof is the subagent's `.meta.json` (`agentType`) and every `"model"` (and
-`"effort"`) in its `.jsonl`. Afterwards delete the temp folder and its
+Proof is the subagent's `.meta.json` (`agentType`) and `message.model` (and
+`effort`) on every `assistant` record of its `.jsonl`. ⛔ Not every `"model"`
+string: Claude Code's `api-request-shape` record names other models too (its
+advisor, measured: `claude-opus-5-5` in a Haiku 5.5 subagent's transcript
+whose replies were all Haiku). Afterwards delete the temp folder and its
 `projects/<cwd>` folder, and from
 `~/.claude/plugins/store/duckky-swarm_inline-*.json` ONLY the records whose
 `cwd` is that temp folder. ⛔ Never delete the store file: every
@@ -170,10 +184,27 @@ Proof is the subagent's `.meta.json` (`agentType`) and every `"model"` (and
   fires. Agent types DO work under `-p`.
 - Proof of the model a subagent ran on is on disk:
   `~/.claude/projects/<cwd>/<session>/subagents/agent-<id>.meta.json`
-  (`agentType`) and every `"model"` in `agent-<id>.jsonl`.
+  (`agentType`) and `message.model` on the `assistant` records of
+  `agent-<id>.jsonl` (not every `"model"` string; see above).
 
 ## Rules
 
+- ⛔⛔ A hook has 10 s of its OWN time (`HookBudget.ms`). The clock stops only
+  while a `next(e)` or a `$` call is in flight; awaiting a Promise the plugin
+  made itself counts in full. `resume_subagent` used to await the resumed
+  agent's answer that way: live it was cut off at 10.4 s with "no tool.call
+  hook answered" while the agent worked 4.5 minutes on, its answer lost, and
+  the main agent started the same work again. A plugin's spawn always runs in
+  the background, so the tool returns at once and `turn.complete` delivers
+  the answer with `$.prompt.submit` (`delivering`, `resumedReport`). The test
+  kit does NOT enforce the budget, and a plugin spawn there gets no agent id:
+  anything that waits must be proved live with a run longer than 10 s.
+- A failing hook of the plugin's OWN tool answers its own error from
+  `.catch` (`hookFailed`): passing it down (`next(e)`) reaches the engine's
+  "no tool.call hook answered", which says nothing of why.
+- Under `claude -p` a plugin-spawned background agent dies when the main
+  turn ends; an interactive session keeps it. A live test of delivery keeps
+  the main turn busy past the agent's end.
 - ⛔ `$` may only be passed to a function declared at the TOP of a file (or
   imported from one): the engine refuses to load a module that hands `$` to
   a closure inside `register`. Module state lives at the top too.

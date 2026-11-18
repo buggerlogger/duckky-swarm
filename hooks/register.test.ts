@@ -42,7 +42,8 @@ function engine(on: On, answered = 'claude-opus-4-6', files: Record<string, stri
   // the engine hands fs.read a normalised path (C:/a/b arrives as C:\a\b)
   const slashes = (p: string) => p.replace(/\\/g, '/')
   on('fs.read', (_, e) => {
-    const hit = Object.keys(files).find((k) => slashes(k) === slashes(e.path))
+    // `*/name`: a file wherever it is, as the plugin's root differs per machine
+    const hit = Object.keys(files).find((k) => (k.startsWith('*/') ? slashes(e.path).endsWith(k.slice(1)) : slashes(k) === slashes(e.path)))
     if (hit === undefined) throw new Error(`no file ${e.path}`)
     return { value: files[hit] as string }
   })
@@ -411,4 +412,29 @@ test('an effort is never added to a request Claude Code sent without one', async
   await drain($.turn.step({ ...stepOf('a1b2c3d4e5', 0), effort: undefined }) as never)
   await drain($.turn.step(stepOf('a1b2c3d4e5', 1)) as never)
   expect(sent).toEqual([undefined, 'max'])
+})
+
+test('an agent type tells Claude only the effort levels its model has', async ($, on) => {
+  const { registered } = engine(on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  const about = (name: string) => String(registered.find((r) => r.name === name)?.description)
+  expect(about('opus-5-5')).toContain('(low, medium, high, xhigh, max)')
+  expect(about('opus-4-6')).toContain('(low, medium, high, max)')
+  expect(about('haiku-4-5')).toContain('Haiku 4.5 takes no effort')
+  expect(about('haiku-4-5')).not.toContain('xhigh')
+})
+
+test('messages.json at the plugin root is what Claude is sent: an agent type described in its words', async ($, on) => {
+  const file = JSON.stringify({ agentType: { forkDescription: 'Fork onto {label} ({id}), with the chat so far.' } })
+  const { registered } = engine(on, 'claude-opus-4-6', { '*/messages.json': file })
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  expect(registered.find((r) => r.name === 'opus-4-6-fork')?.description).toBe('Fork onto Opus 4.6 (claude-opus-4-6), with the chat so far.')
+  expect(registered.find((r) => r.name === 'opus-4-6')?.description).toContain('Runs the task on Opus 4.6')   // left out: built in
+})
+
+test('a broken messages.json says so in a toast, and the built-in texts are sent', async ($, on) => {
+  const { registered, toasts } = engine(on, 'claude-opus-4-6', { '*/messages.json': '{ "agentType": ' })
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  expect(toasts.join('\n')).toMatch(/duckky-swarm: messages\.json: messages\.json is not valid JSON/)
+  expect(registered.find((r) => r.name === 'opus-4-6-fork')?.description).toContain('A FORK on Opus 4.6')
 })
