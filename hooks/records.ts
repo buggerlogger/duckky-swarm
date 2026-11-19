@@ -47,6 +47,8 @@ export type AgentRecord = {
   effort?: string | number
   /** Its copy as a main session, for `claude --resume <id>` (session-copy.ts). */
   sessionCopy?: string
+  /** A real fork's model requests go to this model (turn.step), not the parent's it inherits. */
+  routeModel?: string
   /** Its workspace folder in the project (workspace.ts), its name, and the key in that name. */
   workspace?: string
   workspaceName?: string

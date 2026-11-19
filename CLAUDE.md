@@ -20,8 +20,9 @@ names. `.claude-plugin/plugin.json` (with the `/config` settings under
 - `hooks/models.ts`: the /config model list -> agent types (pure, tested alone)
 - `hooks/history.ts`: a conversation / transcript as text within a budget (pure)
 - `hooks/records.ts`: one `$.store` record per subagent, key `agent:<id>`
-- `hooks/register.ts`: the types (`<name>` and `<name>-fork`), the context-fork
-  prompt rewrite, records, the `resume_subagent` and `set_subagent_effort`
+- `hooks/register.ts`: the types (`<name>` and `<name>-fork`), a duckky fork
+  made a real one on the Agent call (`tool.call`) and routed to its model
+  (`turn.step`), records, the `resume_subagent` and `set_subagent_effort`
   tools, `/duckky`
 - `hooks/launcher.ts`: how `/duckky` opens the window (PowerShell Start-Process
   via `-EncodedCommand`; the paths go in as DUCKKY_VIEWER / DUCKKY_DIR, never
@@ -255,8 +256,14 @@ names. `.claude-plugin/plugin.json` (with the `/config` settings under
 ## Checked in a real claude (do it again after changing these paths)
 
 - Exact model: `claude -p "Use a subagent running on Opus 4.6 to ..." --plugin-dir .`
-- Context fork: turn 1 gives a code word (`--session-id X`); turn 2
-  (`--resume X`) "fork onto Opus 4.6 and have the fork tell me the code word".
+- Fork: turn 1 READS a file with a secret deep in it (`--session-id X`;
+  measured at char 5,086 of 6,866); turn 2 (`--resume X`) "use the
+  duckky-swarm:sonnet-5-5-fork type, no tools, tell me the secret". Pass:
+  `.meta.json` `isFork: true`, the secret, its replies `claude-sonnet-5-5`.
+  ⛔ Its first `assistant` record is the PARENT's Agent call (the parent's
+  model): a fork's file starts `fork-context-ref`, that copied call, then the
+  fork rules plus its task. A secret in a code word typed in the prompt
+  proves nothing: the old text copy kept prompts and cut tool results.
 - Resume: a NEW session, "resume subagent <id> and ask it the code word".
 Proof is the subagent's `.meta.json` (`agentType`) and `message.model` (and
 `effort`) on every `assistant` record of its `.jsonl`. ⛔ Not every `"model"`
@@ -310,7 +317,19 @@ whose replies were all Haiku). Afterwards delete the temp folder and its
   a closure inside `register`. Module state lives at the top too.
 - `$.agent.register` rejects until the session is bound: call it after
   `next(e)` in `session.start`.
-- A real fork ignores `model` and always runs on the parent's model.
+- A real fork ignores the Agent call's `model`; `turn.step` CAN send its
+  requests to another model (`routeModel`, measured on Sonnet 5.5).
+- ⛔ A hook cannot make a fork: `agent.spawn`'s `fork` is pinned, and a
+  `subagentType: 'fork'` rewrite is refused ("names no agent this call can
+  dispatch"). The Agent `tool.call` rewrite to `subagent_type: 'fork'` works.
+- ⛔ A second `next(e)` in a hook REPLAYS the first one's result: it runs
+  nothing again, so it is no retry (a fallback needs another call).
+- A fork's first request can come before `agent.spawn` resolves with its id
+  (it resolves "once the subagent started"): `forkRoute` finds it by its
+  `$.agent.list()` row (type `fork`, its description).
+- A real fork's transcript starts `fork-context-ref` (parentSessionId,
+  parentLastUuid, contextLength): the parent chain is NOT in its file.
+  `withForkContext` inlines it (29 of 29 records, measured) in readTranscript.
 - ⛔ A plugin tool's `result` is a STRING (or content blocks). An object was
   refused live ("does not match its output shape") AFTER the agent ran, and
   the test kit does not catch it.

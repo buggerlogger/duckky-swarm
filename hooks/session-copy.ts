@@ -30,6 +30,40 @@ const records = (jsonl: string) =>
 
 const isTurn = (r: Record<string, unknown>) => r.type === 'user' || r.type === 'assistant'
 
+// A real fork's transcript starts with a `fork-context-ref` record: the
+// conversation it inherited is NOT in its file, only where it is (the parent
+// session, the uuid of its last record). Measured: that uuid's `parentUuid`
+// chain, walked back, is exactly the record's `contextLength` (29 of 29).
+export function forkContextRef(jsonl: string): { parentSessionId: string; parentLastUuid: string } | null {
+  const first = records(jsonl)[0]
+  if (first?.type !== 'fork-context-ref') return null
+  const { parentSessionId, parentLastUuid } = first
+  return typeof parentSessionId === 'string' && typeof parentLastUuid === 'string' ? { parentSessionId, parentLastUuid } : null
+}
+
+// The fork's transcript whole: the conversation it inherited (the chain out
+// of the parent session's file), then its own records, the first of which
+// (its chain's start) now follows the parent's last. Unchanged when it is
+// no fork's, or the parent's file does not hold the chain.
+export function withForkContext(jsonl: string, parentJsonl: string): string {
+  const ref = forkContextRef(jsonl)
+  if (!ref) return jsonl
+  const byUuid = new Map(records(parentJsonl).filter((r) => typeof r.uuid === 'string').map((r) => [r.uuid as string, r]))
+  const chain: Record<string, unknown>[] = []
+  const seen = new Set<string>()
+  for (let u: unknown = ref.parentLastUuid; typeof u === 'string' && !seen.has(u); ) {
+    const r = byUuid.get(u)
+    if (!r) break
+    seen.add(u)
+    chain.push(r)
+    u = r.parentUuid
+  }
+  if (!chain.length) return jsonl
+  const own = records(jsonl).filter((r) => r.type !== 'fork-context-ref')
+    .map((r) => (r.parentUuid === null && isTurn(r) ? { ...r, parentUuid: ref.parentLastUuid } : r))
+  return `${[...chain.reverse(), ...own].map((r) => JSON.stringify(r)).join('\n')}\n`
+}
+
 // The subagent's transcript as a main session: its own records, each moved
 // to the session (`sessionId`), off the side chain, without its agent id;
 // the first starts the chain. Its title is a CUSTOM title, what /rename

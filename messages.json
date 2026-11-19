@@ -13,7 +13,7 @@
     "effort": "Its effort (how hard it thinks) is the Agent call's `effort` ({levels}){whenLeftOut}; set_subagent_effort changes it while it runs.",
     "whenLeftOut": ", {effort} when left out",
     "noEffort": "{label} takes no effort: leave the Agent call's `effort` out.",
-    "forkDescription": "A FORK on {label} (model {id}): starts with this whole conversation as its context, then does its task. Use it when the user asks to fork onto {label}, {id} or \"{name}\" (a built-in fork cannot change model).",
+    "forkDescription": "A FORK on {label} (model {id}): Claude Code's own fork, with this whole conversation (every tool result) as its context, its requests sent to {label}. Use it when the user asks to fork onto {label}, {id} or \"{name}\" (a built-in fork cannot change model). Give it only its task: it already knows everything above.",
     "prompt": [
       "You are a subagent of Claude Code, running on {label} ({id}) because the user asked for that model.",
       "",
@@ -25,7 +25,7 @@
     ]
   },
   "fork": {
-    "_about": "What a fork onto another model starts with. {conversation} is the chat so far, {task} the task the main agent gave it.",
+    "_about": "A fork onto another model is Claude Code's own fork, with the whole conversation. prompt is only for a loop Claude Code would not fork in: a text copy, {conversation} the chat so far, {task} the task the main agent gave it. refused is what the main agent reads then: {error} is Claude Code's, {type} the fork's agent type.",
     "prompt": [
       "You are a fork of the conversation below, now running on {label} ({id}). You have its context;",
       "the person and the main agent see your work only when you report.",
@@ -35,7 +35,8 @@
       "",
       "Your task:",
       "{task}"
-    ]
+    ],
+    "refused": "Claude Code would not fork here ({error}). Call the Agent tool again with the same agent type, {type}: the fork then gets a text copy of the conversation instead, long tool results cut short."
   },
   "resumeTool": {
     "_about": "The resume_subagent tool: its description and parameters (the main agent reads them), and what it answers. resumedSame when Claude Code resumed the subagent itself; otherwise notItself (when Claude Code would not) and then started, where {from} is the old id and {id} the new one. {open} is the open text, whose {command} is the claude --resume line that opens the subagent as a main session.",

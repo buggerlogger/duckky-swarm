@@ -21,7 +21,7 @@ export const DEFAULT_MESSAGES = {
     whenLeftOut: ', {effort} when left out',
     noEffort: '{label} takes no effort: leave the Agent call\'s `effort` out.',
     forkDescription:
-      'A FORK on {label} (model {id}): starts with this whole conversation as its context, then does its task. Use it when the user asks to fork onto {label}, {id} or "{name}" (a built-in fork cannot change model).',
+      'A FORK on {label} (model {id}): Claude Code\'s own fork, with this whole conversation (every tool result) as its context, its requests sent to {label}. Use it when the user asks to fork onto {label}, {id} or "{name}" (a built-in fork cannot change model). Give it only its task: it already knows everything above.',
     prompt: [
       'You are a subagent of Claude Code, running on {label} ({id}) because the user asked for that model.',
       '',
@@ -43,6 +43,8 @@ export const DEFAULT_MESSAGES = {
       'Your task:',
       '{task}',
     ],
+    refused:
+      'Claude Code would not fork here ({error}). Call the Agent tool again with the same agent type, {type}: the fork then gets a text copy of the conversation instead, long tool results cut short.',
   },
   resumeTool: {
     description:

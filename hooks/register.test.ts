@@ -113,7 +113,67 @@ test('each model takes only the effort levels it has', () => {
   expect(parseModels('claude-haiku-4-5@high, claude-opus-4-6@xhigh, claude-opus-4-6@max').skipped).toEqual(['claude-haiku-4-5@high', 'claude-opus-4-6@xhigh'])
 })
 
-test('a context fork starts with the conversation so far, then its task', async ($, on) => {
+// the model each request went to, from turn.step
+function stepModels(on: On) {
+  const went: string[] = []
+  on('turn.step', async function* (_, e) {
+    went.push(e.model)
+    yield { kind: 'stop', stopReason: 'end_turn', usage: null } as const
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null } as const
+  })
+  return went
+}
+const forkCall = (tool_use_id = 'toolu_fork') =>
+  ({ tool: 'Agent', tool_use_id, description: 'say the code word', prompt: 'say the code word', subagent_type: 'duckky-swarm:opus-4-6-fork' }) as never
+
+test('a duckky fork is Claude Code\'s own fork: its task as the main agent wrote it, every request sent to the model it forks onto', async ($, on) => {
+  const { spawned, store } = engine(on)
+  const calls: { subagent_type?: string }[] = []
+  on('tool.call', (_, e) => (calls.push(e as never), { result: 'launched' }))
+  const went = stepModels(on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.tool.call(forkCall())
+  expect(calls[0]?.subagent_type).toBe('fork')   // the whole conversation, every tool result: no text copy
+  await $.agent.spawn({ ...spawn('fork', 'say the code word'), tool_use_id: 'toolu_fork', fork: true })
+  expect(spawned[0]?.prompt).toMatch(/^say the code word\n\n## Your workspace \(a hard rule\)/)
+  expect(store.get('agent:a1b2c3d4e5')).toMatchObject({ type: 'duckky-swarm:opus-4-6-fork', fork: true, label: 'Opus 4.6', routeModel: 'claude-opus-4-6' })
+  await drain($.turn.step(stepOf('a1b2c3d4e5', 0)) as never)
+  await drain($.turn.step(stepOf('a1b2c3d4e5', 1)) as never)
+  expect(went).toEqual(['claude-opus-4-6', 'claude-opus-4-6'])   // not the parent's claude-opus-5-5
+})
+
+test('a duckky fork\'s first request, out before Claude Code has said its id, already goes to the model it forks onto', async ($, on) => {
+  engine(on)
+  on('tool.call', () => ({ result: 'launched' }))
+  on('agent.list', () => ({ value: [
+    { id: 'f0rk00000001', type: 'fork', description: 'say the code word', status: 'running' },
+    { id: 'other0000001', type: 'general-purpose', description: 'say the code word', status: 'running' },
+  ] }) as never)
+  const went = stepModels(on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.tool.call(forkCall())
+  await drain($.turn.step(stepOf('f0rk00000001', 0)) as never)
+  await drain($.turn.step(stepOf('other0000001', 0)) as never)   // no fork: left on its own model
+  expect(went).toEqual(['claude-opus-4-6', 'claude-opus-5-5'])
+})
+
+test('where Claude Code will not fork, the main agent is told to call the type again, and that call is left a duckky subagent', async ($, on) => {
+  const { toasts } = engine(on)
+  const calls: { subagent_type?: string }[] = []
+  on('tool.call', (_, e) => {
+    const x = e as { subagent_type?: string }
+    calls.push(x)
+    return x.subagent_type === 'fork' ? { result: '', text: 'Forking is not available here', isError: true } : { result: 'launched' }
+  })
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  const first = await $.tool.call(forkCall()) as { deny?: string }
+  expect(first.deny).toContain('Claude Code would not fork here (Forking is not available here). Call the Agent tool again with the same agent type, duckky-swarm:opus-4-6-fork')
+  await $.tool.call(forkCall('toolu_fork2'))
+  expect(calls.map((c) => c.subagent_type)).toEqual(['fork', 'duckky-swarm:opus-4-6-fork'])   // not tried as a fork again
+  expect(toasts.join('\n')).toContain('would not fork here')
+})
+
+test('there, a duckky fork\'s own type gets a text copy: the conversation so far, then its task', async ($, on) => {
   const { spawned, store } = engine(on)
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
   await $.agent.spawn(spawn('duckky-swarm:opus-4-6-fork', 'say the code word'))
@@ -483,6 +543,32 @@ test('a subagent that stops is saved as a session claude --resume opens; /duckky
   expect(JSON.parse(copy.trim().split('\n').pop() ?? '{}')).toMatchObject({ type: 'custom-title', customTitle: rec.workspaceName })
   expect((await $.command.run(duckky('list'))).text).toContain(`as a main session: claude --resume ${rec.workspaceName} --model claude-opus-4-6`)
   expect((await $.command.run(duckky('open a1b2c3d4'))).text).toContain(`claude --resume ${rec.workspaceName} --model claude-opus-4-6`)
+})
+
+test('a duckky fork\'s session copy holds the conversation it inherited, which its own file only points at', async ($, on) => {
+  const jsonl = (rows: object[]) => rows.map((r) => JSON.stringify(r)).join('\n')
+  const parent = jsonl([
+    { type: 'user', uuid: 'p1', parentUuid: null, sessionId: 'sess-now', message: { content: 'read notes.txt' } },
+    { type: 'assistant', uuid: 'p2', parentUuid: 'p1', sessionId: 'sess-now', message: { content: [{ type: 'text', text: 'SECRET=ZEBRA-81' }] } },
+  ])
+  const fork = jsonl([
+    { type: 'fork-context-ref', agentId: 'a1b2c3d4e5', parentSessionId: 'sess-now', parentLastUuid: 'p2', contextLength: 2 },
+    { type: 'user', uuid: 'f1', parentUuid: null, isSidechain: true, agentId: 'a1b2c3d4e5', sessionId: 'sess-now', message: { content: 'say the code word' } },
+    { type: 'assistant', uuid: 'f2', parentUuid: 'f1', isSidechain: true, agentId: 'a1b2c3d4e5', sessionId: 'sess-now', message: { content: [{ type: 'text', text: 'ZEBRA-81' }] } },
+  ])
+  const { store } = engine(on, 'claude-opus-4-6', { [TRANSCRIPT]: fork, 'C:/Users/t/.claude/projects/-w/sess-now.jsonl': parent })
+  const writes = new Map<string, string>()
+  on('fs.write', (_, e) => (writes.set(e.path.split(String.fromCharCode(92)).join('/'), e.text), { value: undefined }))
+  on('classic.SubagentStop', () => ({}))
+  on('tool.call', () => ({ result: 'launched' }))
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.tool.call(forkCall())
+  await $.agent.spawn({ ...spawn('fork', 'say the code word'), tool_use_id: 'toolu_fork', fork: true })
+  await $.classic.SubagentStop({ stop_hook_active: false, agent_id: 'a1b2c3d4e5', agent_transcript_path: TRANSCRIPT, agent_type: 'fork' } as never)
+  const sid = (store.get('agent:a1b2c3d4e5') as { sessionCopy?: string } | undefined)?.sessionCopy ?? ''
+  const rows = (writes.get(`C:/Users/t/.claude/projects/-w/${sid}.jsonl`) ?? '').trim().split('\n').map((l) => JSON.parse(l))
+  expect(rows.map((r) => r.uuid ?? r.type)).toEqual(['p1', 'p2', 'f1', 'f2', 'custom-title'])
+  expect(rows[2].parentUuid).toBe('p2')   // its own turns follow the conversation it inherited
 })
 
 test('a copy the person has worked in as a session is never written over', { options: { workspaces: false } }, async ($, on) => {

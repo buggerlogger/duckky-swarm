@@ -19,7 +19,7 @@ Open `/config` after install. The defaults are already filled in. Claude Code ma
 | Setting | Default | |
 |---|---|---|
 | Subagent models | every current id, comma separated | `name=model-id`, or a bare id. `@effort` sets the type default: `opus-5-5=claude-opus-5-5@high`. Effort is `low`, `medium`, `high`, `xhigh`, `max`, or a token budget. A bad entry is skipped. One typo does not drop the rest of the list. |
-| Fork on another model | `context` | `context` starts a subagent on the named model and gives it a copy of the conversation. `true` is a real fork, which stays on the parent model. |
+| Fork on another model | `context` | `context` adds a `<name>-fork` type per model: a real fork on that model. See Forks. `true` adds none, so a fork stays on the parent model. |
 | Keep subagents across sessions | on | The store keeps model, task, and transcript so a later session can resume. |
 | Character | Clawd | Clawd or Duckky Ducks, above the prompt and in `/duckky`. |
 | Workspace folders | on | A folder per duckky subagent in the project, `duckky-swarm/<model>-<id>-<task>/`. See Workspaces. |
@@ -29,6 +29,18 @@ Open `/config` after install. The defaults are already filled in. Claude Code ma
 The shipped default list is long: Fable, Opus, Sonnet, and Haiku ids from 4.5 upward. Each type is added to the session prompt. Delete the ones you do not use.
 
 Not every model accepts every effort. Opus 4.5 takes `low`, `medium`, `high`. Opus 4.6 and Sonnet 4.6 take those plus `max`, not `xhigh`. Haiku 4.5, Sonnet 4.5, and Claude 3 take none. An effort the model rejects is a 400 and the subagent stops. A number is a token budget, and only on a model that takes effort at all.
+
+## Forks
+
+"Fork onto Sonnet 5.5" picks `duckky-swarm:sonnet-5-5-fork`. The plugin turns that call into Claude Code's own fork (`subagent_type: "fork"`), so the fork has the whole conversation, every tool result included, and its chat starts with the task the main agent wrote. Each of its model requests goes to Sonnet 5.5, not the parent's model.
+
+A spawn hook can't do the switch. Claude Code refuses it: "a hook's subagentType 'fork' names no agent this call can dispatch". So it happens one step earlier, on the Agent call itself.
+
+Before 0.4.0 a duckky fork was a subagent given a text copy of the chat, cut to 120,000 characters with tool results cut to 1,500 each. In a live test it could not name a secret the parent had read at character 5,086 of a file. The real fork names it.
+
+If Claude Code won't fork in some loop, the main agent is told so and calls the same type again. That call gets the text copy.
+
+A fork's own transcript only points at the conversation it inherited. Its `claude --resume` copy and a resume from a later session get that conversation inlined, so the copy opens with everything the fork knew.
 
 ## Resume
 

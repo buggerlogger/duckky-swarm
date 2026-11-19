@@ -1,6 +1,6 @@
 {
   "name": "duckky-swarm",
-  "version": "0.3.9",
+  "version": "0.4.0",
   "description": "Subagents on the exact model you name (Opus 4.6, Opus 5, ...), with proof of the model they ran on, forks, and resume across sessions.",
   "author": {
     "name": "buggerlogger",
@@ -19,7 +19,7 @@
     "forkMode": {
       "type": "string",
       "title": "Fork on another model",
-      "description": "context: a subagent on the chosen model, given a copy of the conversation (works on any model, costs more). true: a real fork, which always stays on the parent's model.",
+      "description": "context: each model also gets a <name>-fork type, Claude Code's own fork (the whole conversation, every tool result) whose requests go to that model. true: no fork types, so a fork stays on the parent's model.",
       "options": ["context", "true"],
       "default": "context"
     },

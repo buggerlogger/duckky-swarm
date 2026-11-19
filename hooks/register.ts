@@ -8,10 +8,10 @@
 // TYPE carries any model id. Each model in /config becomes one,
 // `duckky-swarm:<name>`, whose description tells Claude when to pick it.
 //
-// A real fork always runs on the parent's model (the engine ignores `model`
-// for forks). With Fork on another model = context, each model also gets
-// `duckky-swarm:<name>-fork`: a subagent whose prompt is rewritten here to the
-// conversation so far plus its task.
+// A built-in fork runs on the parent's model (the engine ignores `model` for
+// forks). With Fork on another model = context, each model also gets
+// `duckky-swarm:<name>-fork`: its Agent call is made Claude Code's own fork
+// (the whole conversation), and the fork's requests go to that model.
 //
 // Every subagent is recorded with three models: the one asked for, the one
 // Claude Code resolved when it started (`agent.spawn`), and the one the API
@@ -25,7 +25,7 @@ import { characterFor } from '../characters/index.mjs'
 import { activityOf, shownActivity } from '../viewer/model.mjs'
 import { bandTree, rasterKey, stagesFor, type BandAgent } from './band.tsx'
 import { hookFailed, refusalBrief, resumedReport, subagentReport } from './brief.ts'
-import { asSession, diverged, resumeCommand, sessionIdFor } from './session-copy.ts'
+import { asSession, diverged, forkContextRef, resumeCommand, sessionIdFor, withForkContext } from './session-copy.ts'
 import { newWorkspace, workspaceFiles, workspaceKey, workspaceRules, type Workspace } from './workspace.ts'
 import { text, useMessages } from './messages.ts'
 import { newestWithin, parseTranscript, refusalAt, refusalScene, sessionLines, transcriptLines } from './history.ts'
@@ -71,6 +71,11 @@ let bandId: string | null = null   // the band's requestId while it shows stages
 let drawn = ''                // the band's stages as last laid out: a change re-lays it
 let character = characterFor('Clawd')   // who acts out the work: the Character setting
 const byToolUse = new Map<string, string>()    // the Agent call's tool_use_id -> the agent it started
+// A duckky fork on its way: its Agent call's tool_use_id -> the model it forks
+// onto, and its description (its first request can come before agent.spawn
+// has its id; turn.step then finds it by its row)
+const forkTo = new Map<string, { m: ModelEntry; description: string }>()
+const noFork = new Set<string>()   // loops Claude Code would not fork in ('' is main): a text copy there
 const briefs = new Map<string, string>()       // refused agent id -> its refusal report, until delivered
 const effortFor = new Map<string, Effort>()    // agent id -> the effort the main agent set for it
 // A resume with an effort: matched to its agent at turn.start by its prompt,
@@ -234,7 +239,14 @@ async function readTranscript($: EngineInterface, r: AgentRecord): Promise<strin
   const derived = r.cwd && r.sessionId ? `${subagentsDir(await configDir($), r.cwd, r.sessionId)}/agent-${r.id}.jsonl` : ''
   for (const path of [r.transcript, derived]) {
     if (!path) continue
-    try { return String(await $.fs.read(path)) } catch { /* not there: try the next */ }
+    let jsonl: string
+    try { jsonl = String(await $.fs.read(path)) } catch { continue }   // not there: try the next
+    // a real fork's file only points at the conversation it inherited: the
+    // copy, a resume and a refusal report each get it whole
+    const ref = forkContextRef(jsonl)
+    if (!ref || !r.cwd) return jsonl
+    const parent = `${await configDir($)}/projects/${r.cwd.replace(/[^A-Za-z0-9]/g, '-')}/${ref.parentSessionId}.jsonl`
+    return withForkContext(jsonl, await $.fs.read(parent).then((t) => String(t), () => ''))
   }
   return null
 }
@@ -299,6 +311,14 @@ async function openSwarm($: EngineInterface): Promise<string> {
     .catch((err: Error) => ({ exitCode: 1, stderr: err.message }))
   if (r.exitCode !== 0) return `Could not open the swarm window (${r.stderr.replace(/#< CLIXML[\s\S]*/, '').trim().slice(0, 200) || `exit ${r.exitCode}`}). Run it yourself: ${byHand}`
   return 'Opened the Duckky Swarm window: one pane per subagent of this session, live. Press q in it to close.'
+}
+
+// A duckky fork whose request came before agent.spawn knew its id: its row in
+// the agent list (a fork) matched to its Agent call by its description.
+async function forkRoute($: EngineInterface, agentId: string): Promise<string | undefined> {
+  const row = (await $.agent.list().catch(() => [])).find((a) => a.id === agentId)
+  if (row?.type !== 'fork') return undefined
+  return [...forkTo.values()].find((f) => f.description === row.description)?.m.id
 }
 
 async function forkPrompt($: EngineInterface, m: ModelEntry, task: string): Promise<string> {
@@ -449,6 +469,8 @@ export const register: Register = (on, options) => {
   flushAt = 0
   character = characterFor(options.character)
   live.clear()
+  forkTo.clear()
+  noFork.clear()
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -504,9 +526,18 @@ export const register: Register = (on, options) => {
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const forkOn = contextForks && !e.resume ? models.find((m) => e.subagentType === `${PLUGIN}:${m.name}-fork`) : undefined
-    const ours = models.find((m) => e.subagentType === `${PLUGIN}:${m.name}` || e.subagentType === `${PLUGIN}:${m.name}-fork`)
-    let prompt = forkOn ? await forkPrompt($, forkOn, e.prompt) : e.prompt
+    // A duckky fork is Claude Code's OWN fork (the Agent hook below made its
+    // call subagent_type "fork": the whole conversation, every tool result
+    // included) whose requests go to the model it forks onto (turn.step,
+    // `routeModel`). ⛔ It used to be a duckky subagent handed a TEXT copy cut
+    // to 120k characters, tool results to 1,500 each: measured, it could not
+    // tell a secret the parent had read at character 5,086 of a file ("its
+    // inherited Read result was cut off"). The text copy is left for a loop
+    // Claude Code would not fork in, where the duckky type itself spawns.
+    const target = e.fork && !e.resume ? forkTo.get(e.tool_use_id) : undefined
+    const copyOn = contextForks && !e.resume ? models.find((m) => e.subagentType === `${PLUGIN}:${m.name}-fork`) : undefined
+    const ours = target?.m ?? models.find((m) => e.subagentType === `${PLUGIN}:${m.name}` || e.subagentType === `${PLUGIN}:${m.name}-fork`)
+    let prompt = copyOn ? await forkPrompt($, copyOn, e.prompt) : e.prompt
     // A duckky subagent's workspace, made BEFORE it starts: its task names the
     // folder, and Claude Code gives it an id only once it has started (so the
     // key is the plugin's own). One that carries on as a new subagent brings
@@ -520,18 +551,21 @@ export const register: Register = (on, options) => {
     }
     if (ws) await makeWorkspace($, ws, e.description, ours?.id ?? e.model ?? '').catch(() => undefined)
     const r = await next(prompt === e.prompt ? e : { ...e, prompt })
-    if (r.deny !== undefined || !r.agentId) return r
+    if (r.deny !== undefined || !r.agentId) { forkTo.delete(e.tool_use_id); return r }
+    // where a fork's requests go: the model its duckky type names, or the
+    // model the main agent passed (Claude Code ignores a fork's `model`)
+    const routeModel = target ? target.m.id : e.fork && e.model ? e.model : undefined
     const before = live.get(r.agentId)   // a resume within this session
     await write($, {
       ...before,
       id: r.agentId,
-      type: e.subagentType,
-      label: ours?.label ?? labelFor(r.model),
-      model: r.model,
+      type: target ? `${PLUGIN}:${target.m.name}-fork` : e.subagentType,
+      label: ours?.label ?? labelFor(routeModel ?? r.model),
+      model: routeModel ?? r.model,
       requested: ours?.id ?? e.model ?? null,
       answeredBy: before?.answeredBy ?? null,
       description: e.description,
-      fork: e.fork || !!forkOn,
+      fork: e.fork || !!copyOn,
       sessionId,
       cwd,
       startedAt: before?.startedAt ?? Date.now(),
@@ -541,14 +575,12 @@ export const register: Register = (on, options) => {
       activity: 'starting',
       background: e.background,
       ...(ws ? { workspace: ws.folder, workspaceName: ws.name, workspaceKey: ws.key } : {}),
+      ...(routeModel ? { routeModel } : before?.routeModel ? { routeModel: before.routeModel } : {}),
     })
     byToolUse.set(e.tool_use_id, r.agentId)
+    forkTo.delete(e.tool_use_id)   // its record routes it from here
     restage($)
-    if (ours && !sameModel(r.model, ours.id)) $.ui.toast(`${PLUGIN}: asked for ${ours.id}, Claude Code started ${r.model}`)
-    if (e.fork && e.model) {
-      $.ui.toast(`${PLUGIN}: a real fork runs on ${e.parentModel}, not ${e.model}.` +
-        (contextForks ? ' Ask for a fork on a duckky model instead.' : ' Set "Fork on another model" to context in /config.'))
-    }
+    if (ours && !routeModel && !sameModel(r.model, ours.id)) $.ui.toast(`${PLUGIN}: asked for ${ours.id}, Claude Code started ${r.model}`)
     showRunning($)
     return r
   }).catch(($, e, next) => next(e))
@@ -619,8 +651,13 @@ export const register: Register = (on, options) => {
     const want = effortFor.get(agentId)
     // never add an effort to a request Claude Code sent without one: that
     // model takes none, and a request with one would be refused
-    const ask = want === undefined || e.effort === undefined ? e : { ...e, effort: want }
     const r0 = live.get(agentId)
+    // a duckky fork: its requests go to the model it forks onto, with the
+    // parent's whole conversation it inherited (its first can come before
+    // agent.spawn has its id: then its row says which fork it is)
+    const route = r0 ? r0.routeModel : forkTo.size ? await forkRoute($, agentId) : undefined
+    const routed = route ? { ...e, model: route } : e
+    const ask = want === undefined || e.effort === undefined ? routed : { ...routed, effort: want }
     if (r0 && ask.effort !== undefined && r0.effort !== ask.effort) { r0.effort = ask.effort; restage($) }
     if (r0?.activity === 'starting') setActivity($, r0, 'thinking')   // its first request is out: it thinks
     const result = yield* next(ask)
@@ -632,8 +669,23 @@ export const register: Register = (on, options) => {
   // workspace is, so the main agent reads it; and when the subagent it waited
   // on stopped on a refusal, where the subagent stood and how to resume it.
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
-    const out = await next(e)
-    const id = byToolUse.get(String(e.tool_use_id ?? ''))
+    // A duckky fork is made HERE, as Claude Code's own fork: a spawn hook
+    // cannot make one ("a hook's subagentType 'fork' names no agent this call
+    // can dispatch", measured). agent.spawn finds its model by this call's id.
+    const call = String(e.tool_use_id ?? '')
+    const m = contextForks && call && !noFork.has(e.agentId ?? '')
+      ? models.find((x) => e.subagent_type === `${PLUGIN}:${x.name}-fork`) : undefined
+    if (m) forkTo.set(call, { m, description: e.description })
+    const out = await next(m ? { ...e, subagent_type: 'fork' } : e)
+    if (m && !byToolUse.has(call) && (out.deny !== undefined || out.isError)) {
+      // no fork started: Claude Code would not fork in this loop, so the same
+      // type, called again, spawns itself and gets a text copy
+      forkTo.delete(call)
+      noFork.add(e.agentId ?? '')
+      $.ui.toast(`${PLUGIN}: Claude Code would not fork here; the fork will get a text copy of the conversation`)
+      return { deny: text('fork', 'refused', { type: `${PLUGIN}:${m.name}-fork`, error: String(out.deny ?? out.text ?? '').slice(0, 300) }) }
+    }
+    const id = byToolUse.get(call)
     if (!id || out.deny !== undefined) return out
     const notes: string[] = []
     const folder = live.get(id)?.workspace
