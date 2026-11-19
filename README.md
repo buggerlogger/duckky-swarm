@@ -47,6 +47,8 @@ duckky claude-haiku-5-5-903bfc9a-test-add-in-math.mjs   open it in its own proje
 duckky open 3 --here                     open number 3 in the folder you're in
 ```
 
+Run `duckky shell` once and `claude --duckky` does the same.
+
 Needs Node. Windows opens the window. Other systems get the command to paste.
 
 If the model that actually started is not the one you asked for, you get a toast.

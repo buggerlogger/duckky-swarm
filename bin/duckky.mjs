@@ -12,15 +12,17 @@
 //   duckky open <...> --print    prints the command instead of running it
 //   duckky open <...> -- <args>  passes <args> on to claude (e.g. -p "...")
 //   --config <dir>               Claude Code's folder (else CLAUDE_CONFIG_DIR, else ~/.claude)
+//   duckky shell                 makes `claude --duckky ...` run `duckky ...` in your shells
+//   duckky shell --remove        takes that out again
 //
 // Install: npm install -g github:buggerlogger/duckky-swarm
 
-import { spawn } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
-import { INDEX_DIR, listing, matchSessions, openLine, parseEntries, projectKey } from './sessions.mjs'
+import { INDEX_DIR, listing, matchSessions, openLine, parseEntries, projectKey, shellBlock, withBlock } from './sessions.mjs'
 
 const all = process.argv.slice(2)
 const cut = all.indexOf('--')
@@ -79,8 +81,40 @@ function choose(query) {
   process.exit(1)
 }
 
+// `claude --duckky`: claude has no such option and a plugin cannot add one, so
+// a shell function named claude takes it and hands everything else to the
+// real claude unchanged. PowerShell's all-hosts profile (every host, and the
+// person's own profile file untouched) and pwsh's; bash and zsh where their rc
+// file exists. `--target <file> --kind powershell|bash` names one file.
+function shellTargets() {
+  if (flag('target')) return [{ file: flag('target'), kind: flag('kind') === 'bash' ? 'bash' : 'powershell' }]
+  const out = []
+  for (const ps of process.platform === 'win32' ? ['powershell', 'pwsh'] : ['pwsh']) {
+    const r = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-Command', '$PROFILE.CurrentUserAllHosts'], { encoding: 'utf8' })
+    if (r.status === 0 && r.stdout.trim()) out.push({ file: r.stdout.trim(), kind: 'powershell' })
+  }
+  for (const rc of ['.bashrc', '.zshrc']) if (existsSync(join(homedir(), rc)) || (rc === '.bashrc' && has('bash'))) out.push({ file: join(homedir(), rc), kind: 'bash' })
+  return out
+}
+
+function shell() {
+  const remove = has('remove')
+  const targets = shellTargets()
+  if (!targets.length) { console.error('No PowerShell, bash or zsh profile found. Type duckky instead of claude --duckky.'); process.exit(1) }
+  for (const t of targets) {
+    const before = existsSync(t.file) ? readFileSync(t.file, 'utf8') : ''
+    const after = withBlock(before, remove ? '' : shellBlock(t.kind))
+    if (after === before) { console.log(`${remove ? 'nothing to remove in' : 'already there:'} ${t.file}`); continue }
+    mkdirSync(dirname(t.file), { recursive: true })
+    writeFileSync(t.file, after)
+    console.log(`${remove ? 'removed from' : 'added to'} ${t.file}`)
+  }
+  if (!remove) console.log('\nOpen a new terminal, then: claude --duckky   (or claude --duckky <name>, claude --duckky list ...)')
+}
+
 const [verb = '', ...rest] = words
-if (verb === 'open') choose(rest.join(' '))
+if (verb === 'shell') shell()
+else if (verb === 'open') choose(rest.join(' '))
 else if (verb === 'list' || (!verb && !process.stdin.isTTY)) {
   const shown = rest.length ? matchSessions(entries, rest.join(' ')) : entries
   for (const line of listing(shown)) console.log(line)

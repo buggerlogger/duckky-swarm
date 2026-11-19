@@ -2,11 +2,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { listing, matchSessions, openLine, parseEntries, projectKey } from './sessions.mjs'
+import { listing, matchSessions, openLine, parseEntries, projectKey, shellBlock, withBlock } from './sessions.mjs'
 
 const entry = (name, updated, more = {}) => ({
   sessionId: `${name.slice(-8)}-0000-4000-8000-000000000000`, name, cwd: 'C:\\work\\app', file: 'x', model: 'claude-opus-5-5',
@@ -75,4 +75,39 @@ test('duckky with no sessions says how they come', () => {
     assert.match(run(config, 'list').stdout, /No duckky sessions yet/)
     assert.equal(existsSync(join(config, 'duckky-swarm')), false)   // listing writes nothing
   } finally { rmSync(config, { recursive: true, force: true }) }
+})
+
+test('the claude --duckky block goes in once, is replaced, and comes out leaving the rest of the profile', () => {
+  const mine = '# my own profile\n. "C:\\tools\\cc.ps1"\n'
+  const once = withBlock(mine, shellBlock('powershell'))
+  assert.ok(once.startsWith(mine))
+  assert.equal(withBlock(once, shellBlock('powershell')), once)   // twice: no second copy
+  assert.equal(withBlock(once, ''), mine)                          // removed: the profile as it was
+  assert.equal(withBlock('', shellBlock('bash')).trim().split('\n').length, 3)
+  assert.match(shellBlock('bash'), /command claude "\$@"/)
+})
+
+test('duckky shell writes the block into a profile, once, and --remove takes it out', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'duckky-shell-'))
+  const profile = join(dir, 'profile.ps1')
+  try {
+    writeFileSync(profile, '# mine\n')
+    const add = () => spawnSync(process.execPath, [DUCKKY, 'shell', '--target', profile, '--kind', 'powershell'], { encoding: 'utf8' })
+    assert.match(add().stdout, /added to/)
+    assert.match(add().stdout, /already there/)
+    assert.match(readFileSync(profile, 'utf8'), /^# mine\n# >>> duckky/)
+    assert.match(spawnSync(process.execPath, [DUCKKY, 'shell', '--remove', '--target', profile], { encoding: 'utf8' }).stdout, /removed from/)
+    assert.equal(readFileSync(profile, 'utf8'), '# mine\n')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('in a real PowerShell, claude --duckky reaches duckky and claude --version still reaches claude', { skip: process.platform !== 'win32' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'duckky-ps-'))
+  const block = join(dir, 'block.ps1')
+  try {
+    writeFileSync(block, shellBlock('powershell'))
+    const ps = (cmd) => spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', `. '${block}'; ${cmd}`], { encoding: 'utf8' })
+    assert.match(ps('claude --duckky --help').stdout, /duckky list \[words\]/)
+    assert.match(ps('claude --version').stdout, /\d+\.\d+\.\d+/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })

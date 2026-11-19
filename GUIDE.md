@@ -95,7 +95,7 @@ duckky open <...> -- <args>    pass <args> on to claude
 
 Claude Code finds a session by the folder it runs in, so `duckky` changes to the session's project folder first. With `--here` it copies the session into the folder you're in and opens it there. The subagent then works in that folder, while its workspace stays in the old project.
 
-`claude --duckky` isn't possible: plugins can't add flags to `claude` itself.
+To type `claude --duckky` instead, run `duckky shell` once. A plugin can't add an option to `claude`, so this adds a small shell function named `claude` to your PowerShell profile (and to `.bashrc` / `.zshrc` if you have one). It sends `claude --duckky ...` to `duckky ...` and every other call to the real `claude`, unchanged. Open a new terminal afterwards. `duckky shell --remove` takes it out.
 
 ## Reports in the chat
 

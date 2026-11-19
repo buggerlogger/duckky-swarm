@@ -183,7 +183,16 @@ names. `.claude-plugin/plugin.json` (with the `/config` settings under
   project first; `--print` and `-- <args>` exist for testing without a
   window. On Windows claude is claude.cmd: one quoted command line to a
   shell (an args array with shell:true prints DEP0190). Plugins cannot add
-  flags to `claude`, so `claude --duckky` is impossible.
+  flags to `claude` ("error: unknown option '--duckky'"), so `duckky shell`
+  adds a shell function named claude (`shellBlock`, between marker lines,
+  `withBlock` idempotent, `--remove`): PowerShell's CurrentUserAllHosts
+  profile (never the person's own per-host file) and pwsh's, plus
+  .bashrc/.zshrc if they exist. It passes every other call to the real
+  claude (claude.ps1, else claude.cmd) and piped input only when there is
+  some: an empty pipe makes claude think its input is not a terminal. The
+  user's `cc` profile switcher calls `claude` too, so it goes through it.
+  Proved in a real PowerShell (test): --duckky reaches duckky, --version
+  reaches claude.
 - Your own texts: `~/.claude/duckky-swarm/messages.json`, laid over the
   plugin's file (`useMessages(plugin, own)`), so an update keeps them.
 - Matching: `findMatches` returns every match; `findAgent` returns one or

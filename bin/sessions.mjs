@@ -55,3 +55,34 @@ export function listing(entries, now = Date.now()) {
 
 // The line that opens one in any terminal: in its own project folder.
 export const openLine = (e) => `cd "${e.cwd}"; claude --resume ${e.sessionId}${e.model ? ` --model ${e.model}` : ''}`
+
+// `claude --duckky ...` -> `duckky ...`, as a shell function named claude that
+// hands every other call to the real claude unchanged. In PowerShell, piped
+// input is passed on only when there is some: an empty pipe would make claude
+// think its input is not a terminal.
+const START = '# >>> duckky: claude --duckky (remove with: duckky shell --remove) >>>'
+const END = '# <<< duckky <<<'
+export function shellBlock(kind) {
+  const body = kind === 'bash'
+    ? ['claude() { if [ "$1" = "--duckky" ]; then shift; duckky "$@"; else command claude "$@"; fi; }']
+    : [
+        'function claude {',
+        "  if ($args.Count -gt 0 -and $args[0] -eq '--duckky') { duckky @($args | Select-Object -Skip 1); return }",
+        '  $real = Get-Command claude -CommandType ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1',
+        '  if (-not $real) { $real = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 }',
+        '  if ($MyInvocation.ExpectingInput) { $input | & $real.Source @args } else { & $real.Source @args }',
+        '}',
+      ]
+  return [START, ...body, END].join('\n')
+}
+
+// A profile's text with the block put in (or replaced), or taken out when
+// `block` is empty; the rest of the file as it was.
+export function withBlock(text, block) {
+  const at = text.indexOf(START)
+  const end = at >= 0 ? text.indexOf(END, at) : -1
+  let rest = at >= 0 && end >= 0 ? text.slice(0, at) + text.slice(end + END.length).replace(/^\r?\n/, '') : text
+  if (!block) return rest
+  if (rest && !rest.endsWith('\n')) rest += '\n'
+  return `${rest}${block}\n`
+}

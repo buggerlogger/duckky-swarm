@@ -1,6 +1,6 @@
 {
   "name": "duckky-swarm",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Subagents on the exact model you name (Opus 4.6, Opus 5, ...), with proof of the model they ran on, forks, and resume across sessions.",
   "author": {
     "name": "buggerlogger",
