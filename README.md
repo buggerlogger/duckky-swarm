@@ -35,7 +35,7 @@ Desktop app has no `/plugin`. Hit + by the prompt, Plugins, add marketplace `bug
 - Open any subagent as a normal session: `/duckky open ac82d396` prints a `claude --resume <id>` line. Run it in another terminal and keep working with that subagent as your main agent.
 - Every duckky subagent gets its own folder in your project, like `duckky-swarm/claude-opus-5-5-a1b2c3d4-compare-trace-shapes/`. It keeps `findings.md`, `opening.md`, `closed.md`, `block.md` and `devlogs.md` up to date as it works, and does its scratch work in `temp/` so your code stays clean. `claude --resume <folder name>` opens that subagent.
 - "Opus 5.5, low effort." "Set that one's effort to high" hits the next request.
-- When a background subagent finishes, its report lands in your prompt box. Read it, edit it if you like, and press Enter: it's your own message, so you can rewind to it and edit it later. It never overwrites something you're typing; it waits.
+- When a background subagent finishes, its report reaches Claude at once, never left pending. While Claude works it arrives with Claude's next tool result. While Claude is idle it's sent straight away. If you stop Claude first, it's sent right after. To edit reports and rewind to them instead, set Reports go to = Your prompt box.
 
 `/duckky` opens a pane per subagent. `q` quits. `/duckky list` is model, task, status, id, and the `claude --resume` line for each. `/duckky sessions` lists every duckky session on this computer, in every project.
 

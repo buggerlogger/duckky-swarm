@@ -165,23 +165,31 @@ names. `.claude-plugin/plugin.json` (with the `/config` settings under
   test script in temp/, src/ untouched, and `claude --resume <folder name>`
   opened it. Setting: `workspaces` (on).
 - Subagent reports (`reports`: background by default, every, off) and where
-  they go (`reportsTo`: the prompt box by default, or the chat): at a duckky
-  subagent's `turn.complete` its report (`subagentReport`, messages
+  they go (`reportsTo`: Claude at once by default, or the prompt box): at a
+  duckky subagent's `turn.complete` its report (`subagentReport`, messages
   `report`), the refusal report and a resumed answer all go through
-  `deliver()`. ⛔⛔ A plugin's `$.prompt.submit` CANNOT be rewound to: Claude
-  Code stores it origin {kind:"plugin"}, promptSource and turnOrigin
-  "system" (asUser changes only the frame), and its rewind list takes only
-  a message with origin human (`Sg`: kind "human") and turnOrigin human or
-  sdk (read in claude.exe's bundle after the user's rewind failed). So by
-  default the report goes into the prompt box with `$.prompt.fill`: the
-  person sends it, and it is their own typed message. It never goes over a
-  draft (`$.prompt.read` non-empty: it waits in `pendingReports`, retried by
-  the 1 s clock), waiting ones go in together joined by `---`, and with no
-  box (`no_composer`, claude -p) it falls back to submit (proved live). Not
-  proved interactively here (that needs a window, and a window steals the
-  user's keyboard): the person's own test is the proof. Claude Code still
-  sends its own hidden task notice. Not on a refusal (the refusal report
-  went already), not for built-in subagents.
+  `deliver()`.
+  ⛔⛔ A plugin's `$.prompt.submit` WAITS and can be LOST: Claude Code queues
+  it priority "later" (runs once the main agent is idle; no option changes
+  that) and an interrupt removes the queue (user's session: queued 14:32:12
+  -> delivered 60 s later; queued 14:38:29 -> "queue remove" on Esc, never
+  delivered). So "at once": while the main agent is in a turn (`mainTurn`,
+  from turn.start/turn.complete with no agentId) the report waits in
+  `forClaude` and rides the main agent's NEXT tool result as `context`
+  (proved live: hook_additional_context on Bash call 1 of 6, 98 s before the
+  turn ended, no queue entry); idle, it is submitted (runs at once); a turn
+  that ends with reports left sends them in turn.complete, and an ABORTED
+  one 1.5 s later on the clock (`flushAt`), after the interrupt has cleared
+  Claude Code's queue (not provable in the kit or under -p).
+  ⛔⛔ A plugin's message also CANNOT be rewound to: Claude Code stores it
+  origin {kind:"plugin"}, promptSource and turnOrigin "system" (asUser
+  changes only the frame), and its rewind list takes only origin human
+  (`Sg`: kind "human") and turnOrigin human or sdk (read in claude.exe's
+  bundle). The prompt-box option (`$.prompt.fill`) makes it the person's
+  own typed message: never over a draft (`pendingReports`, retried by the
+  clock), waiting ones joined by `---`, no box (claude -p) -> submit.
+  Claude Code still sends its own hidden task notice. Not on a refusal (the
+  refusal report went already), not for built-in subagents.
 - The session index: `copyAsSession` also writes
   `<config>/duckky-swarm/sessions/<sid>.json` (one file per copy, so two
   sessions never race), even when it leaves a diverged copy alone.

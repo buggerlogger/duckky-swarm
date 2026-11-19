@@ -588,8 +588,67 @@ function box(on: On, draft = '', canFill = true) {
   on('prompt.fill', (_, e) => (canFill
     ? (filled.push(e.text), state.draft = e.text, { isFilled: true, text: e.text, cursor: e.text.length } as never)
     : ({ isFilled: false, refusal: 'no_composer', text: '', cursor: 0 } as never)))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('tool.call', () => ({ result: 'file text' }))
   return { filled, submitted, state }
 }
+
+// The main agent's own turn (no agentId) starting and ending.
+const mainStarts = ($: Engine) => $.turn.start({ text: 'go on', turnId: 'm1' } as never)
+const mainEnds = ($: Engine, isAborted = false) => {
+  const { agentId: _none, ...turn } = finished('x', 'claude-opus-4-8') as unknown as Record<string, unknown>
+  return $.turn.complete({ ...turn, turnId: 'm1', isAborted } as never)
+}
+
+test('a report reaches an idle main agent at once: sent, never left waiting', async ($, on) => {
+  engine(on, 'claude-opus-5-5')
+  const b = box(on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await finish($, true)
+  expect(b.submitted.length).toBe(1)
+  expect(b.submitted[0]).toMatch(REPORT)
+  expect(b.filled).toEqual([])
+})
+
+test('while the main agent works, the report comes on its very next tool result: read mid-turn, not queued for the turn\'s end', async ($, on) => {
+  engine(on, 'claude-opus-5-5')
+  const b = box(on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await mainStarts($)
+  await finish($, true)
+  expect(b.submitted).toEqual([])   // a message now would only be queued "later"
+  const out = await $.tool.call({ tool: 'Read', file_path: 'C:/w/x.ts' } as never) as { result?: unknown; context?: string[] }
+  expect(out.result).toBe('file text')
+  expect(out.context?.length).toBe(1)
+  expect(out.context?.[0]).toMatch(REPORT)
+  const later = await $.tool.call({ tool: 'Read', file_path: 'C:/w/y.ts' } as never) as { context?: string[] }
+  expect(later.context ?? []).toEqual([])   // delivered once
+  await mainEnds($)
+  expect(b.submitted).toEqual([])
+})
+
+test('a report the main agent\'s turn ended before carrying is sent the moment the turn is over', async ($, on) => {
+  engine(on, 'claude-opus-5-5')
+  const b = box(on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await mainStarts($)
+  await finish($, true)
+  await mainEnds($)
+  expect(b.submitted.length).toBe(1)
+  expect(b.submitted[0]).toMatch(REPORT)
+})
+
+test('stopped mid-turn (Esc): the report is kept, not sent into the queue the interrupt is clearing', async ($, on) => {
+  engine(on, 'claude-opus-5-5')
+  const b = box(on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await mainStarts($)
+  await finish($, true)
+  await mainEnds($, true)
+  expect(b.submitted).toEqual([])   // the clock sends it 1.5 s on (the kit has no clock: proved by the code path)
+})
+
+const BOX = { reportsTo: 'Your prompt box' }
 
 // (the engine's spawn answers every spawn with agent a1b2c3d4e5)
 async function finish($: Engine, background: boolean, type = 'duckky-swarm:opus-5-5', task = 'Compare the trace shapes') {
@@ -599,7 +658,7 @@ async function finish($: Engine, background: boolean, type = 'duckky-swarm:opus-
 
 const REPORT = /^\[duckky-swarm\] Report from subagent a1b2c3d4 \(Opus 5\.5\), task "Compare the trace shapes":\n\nCompare the trace shapes: done\. Its workspace: \/w\/duckky-swarm\/claude-opus-5-5-[0-9a-f]{8}-compare-the-trace-shapes\.$/
 
-test('a background subagent\'s report goes into the prompt box: sent from there it is the person\'s own message, which they can rewind to', async ($, on) => {
+test('Reports go to = Your prompt box: there, sent by the person, it is their own message, which they can rewind to', { options: BOX }, async ($, on) => {
   engine(on, 'claude-opus-5-5')
   const b = box(on)
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
@@ -609,7 +668,7 @@ test('a background subagent\'s report goes into the prompt box: sent from there 
   expect(b.submitted).toEqual([])   // not posted by the plugin: Claude Code would not let them rewind to that
 })
 
-test('a report never goes over a draft the person is typing; it waits, and two waiting reports go in together', async ($, on) => {
+test('in the prompt box a report never goes over a draft the person is typing; it waits, and two go in together', { options: BOX }, async ($, on) => {
   engine(on, 'claude-opus-5-5')
   const b = box(on, 'half a sentence I am writ')
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
@@ -622,21 +681,12 @@ test('a report never goes over a draft the person is typing; it waits, and two w
   expect(b.filled[0]).toMatch(/Compare the trace shapes: done\.[\s\S]*\n\n---\n\n\[duckky-swarm\] Report from subagent a1b2c3d4 \(Opus 5\.5\), task "map the code":\n\nmap the code: done\./)
 })
 
-test('with no prompt box (claude -p) the report goes into the chat', async ($, on) => {
+test('prompt box chosen but none drawn (claude -p): the report is sent instead', { options: BOX }, async ($, on) => {
   engine(on, 'claude-opus-5-5')
   const b = box(on, '', false)
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
   await finish($, true)
   expect(b.submitted.length).toBe(1)
-  expect(b.submitted[0]).toMatch(REPORT)
-})
-
-test('Reports go to = The chat posts it straight into the chat', { options: { reportsTo: 'The chat' } }, async ($, on) => {
-  engine(on, 'claude-opus-5-5')
-  const b = box(on)
-  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
-  await finish($, true)
-  expect(b.filled).toEqual([])
   expect(b.submitted[0]).toMatch(REPORT)
 })
 
@@ -653,7 +703,7 @@ test('Subagent reports = Every subagent reports a foreground one too', { options
   const b = box(on)
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
   await finish($, false)
-  expect(b.filled.length).toBe(1)
+  expect(b.submitted.length).toBe(1)
 })
 
 test('Subagent reports = Off reports none', { options: { reports: 'Off' } }, async ($, on) => {

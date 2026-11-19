@@ -89,9 +89,20 @@ const reportsFor = (setting: unknown): typeof reports =>
 // turnOrigin is human or sdk, and a plugin's $.prompt.submit is stored
 // origin plugin, promptSource and turnOrigin "system", asUser or not (read
 // in its own code, and in the user's transcript after a rewind failed).
-let reportsTo: 'box' | 'chat' = 'box'
-const reportsToFor = (setting: unknown): typeof reportsTo => (/chat/i.test(String(setting ?? '')) ? 'chat' : 'box')
+// ⛔⛔ And a plugin's message WAITS: Claude Code queues it "later" (it runs
+// once the main agent is idle; no option changes that) and an interrupt
+// deletes it (measured in the user's session: queued 14:32:12, delivered
+// 60 s later after the turn; queued 14:38:29, "queue remove" at 14:47:19 on
+// Esc, never delivered). So by default a report goes to Claude AT ONCE: on
+// the main agent's next tool result while it works (`context`, read
+// mid-turn), sent at once while it is idle, and sent the moment a turn ends
+// (or is stopped) with reports still undelivered.
+let reportsTo: 'now' | 'box' = 'now'
+const reportsToFor = (setting: unknown): typeof reportsTo => (/box/i.test(String(setting ?? '')) ? 'box' : 'now')
 const pendingReports: string[] = []   // waiting for the person's prompt box to be empty
+const forClaude: string[] = []        // for the main agent's next tool result
+let mainTurn = false                   // the main agent is in a turn
+let flushAt = 0                        // when to send what a stopped turn left (the clock)
 // One file per session copy, in every project, in Claude Code's own folder
 // (INDEX_DIR, bin/sessions.mjs): what /duckky sessions and `duckky` list.
 export type SessionEntry = {
@@ -330,13 +341,29 @@ async function copyAsSession($: EngineInterface, r: AgentRecord): Promise<string
 
 const isDuckky = (r: AgentRecord) => models.some((m) => r.type === `${PLUGIN}:${m.name}` || r.type === `${PLUGIN}:${m.name}-fork`) || !!r.workspace
 
-// A report for the person and Claude: straight into the chat, or (the
-// default) into the person's prompt box, where they read it, edit it if they
-// like, and send it as their own message, one they can rewind to.
+// A report for Claude, never left waiting (the default): while the main agent
+// works, on its next tool result; while it is idle, sent now. Or, chosen in
+// /config, into the person's prompt box to edit and send (their own message,
+// which they can rewind to).
 async function deliver($: EngineInterface, report: string) {
-  if (reportsTo === 'chat') { await $.prompt.submit({ text: report }).catch(() => undefined); return }
-  pendingReports.push(report)
-  await fillBox($)
+  if (reportsTo === 'box') { pendingReports.push(report); await fillBox($); return }
+  if (mainTurn) { forClaude.push(report); return }
+  await sendNow($, [report])
+}
+
+async function sendNow($: EngineInterface, reports: string[]) {
+  if (!reports.length) return
+  await $.prompt.submit({ text: reports.join('\n\n---\n\n') }).catch(() => undefined)
+  $.ui.toast(`${PLUGIN}: ${reports.length === 1 ? 'a subagent report' : `${reports.length} subagent reports`} sent to Claude`)
+}
+
+// What a stopped turn left: sent a moment after it, once Claude Code has
+// cleared its own queue (an interrupt empties it; something sent while it
+// does would go too). Driven by the clock from session.start.
+async function flushLeft($: EngineInterface) {
+  if (!flushAt || Date.now() < flushAt || mainTurn) return
+  flushAt = 0
+  await sendNow($, forClaude.splice(0))
 }
 
 // The waiting reports into the prompt box, together, once it is empty: never
@@ -417,6 +444,9 @@ export const register: Register = (on, options) => {
   reports = reportsFor(options.reports)
   reportsTo = reportsToFor(options.reportsTo)
   pendingReports.length = 0
+  forClaude.length = 0
+  mainTurn = false
+  flushAt = 0
   character = characterFor(options.character)
   live.clear()
 
@@ -426,7 +456,7 @@ export const register: Register = (on, options) => {
     sessionId = await $.session.id().catch(() => '')
     await loadMessages($)   // before anything below sends a text
     $.clock.every(TICK_MS, () => { void animate($) })
-    $.clock.every(1000, () => { void copyAgain($); void fillBox($) })
+    $.clock.every(1000, () => { void copyAgain($); void fillBox($); void flushLeft($) })
     // $.agent.register rejects until the session is bound: after next(e)
     for (const m of models) {
       await addType($, m.name, descriptionFor(m), m)
@@ -528,7 +558,16 @@ export const register: Register = (on, options) => {
   // test). After it: a test shows pass or fail, anything else back to
   // thinking. It only watches; the call and its result go on unchanged.
   on('tool.call', async ($, e, next) => {
-    const r = e.agentId ? live.get(e.agentId) : undefined
+    // the main agent's tool call: subagent reports go to Claude on its result,
+    // read at once, mid-turn (a message would wait for the turn to end)
+    if (!e.agentId) {
+      const out = await next(e)
+      if (!forClaude.length || out.deny !== undefined) return out
+      const reports = forClaude.splice(0)
+      $.ui.toast(`${PLUGIN}: ${reports.length === 1 ? 'a subagent report' : `${reports.length} subagent reports`} went to Claude`)
+      return { ...out, context: [...(out.context ?? []), ...reports] }
+    }
+    const r = live.get(e.agentId)
     if (!r) return next(e)
     const doing = activityOf(String(e.tool), e as unknown as Record<string, unknown>)
     setActivity($, r, doing)
@@ -555,6 +594,7 @@ export const register: Register = (on, options) => {
   // A resume_subagent with an effort: its agent's first turn starts with the
   // prompt we spawned it with, before its first model request.
   on('turn.start', async ($, e, next) => {
+    if (!e.agentId) mainTurn = true   // the main agent works: a report rides its next tool result
     const effort = e.agentId ? pendingEffort.get(promptKey(e.text)) : undefined
     if (e.agentId && effort !== undefined) {
       pendingEffort.delete(promptKey(e.text))
@@ -623,7 +663,18 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
-    const r = e.agentId ? live.get(e.agentId) : undefined
+    // The main agent's turn is over: reports it had no tool call left to carry
+    // go now (the session is idle, so nothing waits). After a stop, a moment
+    // later: the interrupt clears Claude Code's queue as it ends.
+    if (!e.agentId) {
+      mainTurn = false
+      if (forClaude.length) {
+        if (e.isAborted) flushAt = Date.now() + 1500
+        else await sendNow($, forClaude.splice(0))
+      }
+      return done
+    }
+    const r = live.get(e.agentId)
     if (r) {
       r.status = e.isAborted ? 'aborted' : e.reason === 'answer' ? 'done' : e.reason
       r.endedAt = Date.now()

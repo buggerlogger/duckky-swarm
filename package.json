@@ -1,6 +1,6 @@
 {
   "name": "duckky-swarm",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "description": "The duckky command: every Duckky Swarm subagent session on this computer, opened as a normal Claude Code session from any folder.",
   "type": "module",
   "bin": {

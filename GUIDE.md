@@ -24,7 +24,7 @@ Open `/config` after install. The defaults are already filled in. Claude Code ma
 | Character | Clawd | Clawd or Duckky Ducks, above the prompt and in `/duckky`. |
 | Workspace folders | on | A folder per duckky subagent in the project, `duckky-swarm/<model>-<id>-<task>/`. See Workspaces. |
 | Subagent reports | Background subagents | Which finished subagents report. `Every subagent` adds foreground ones, whose result is otherwise the Agent tool's output. `Off` reports none. |
-| Reports go to | Your prompt box | Where a report lands: your prompt box (you send it, so you can rewind to it), or the chat (Claude reads it at once, but you can't rewind to it). |
+| Reports go to | Claude, at once | `Claude, at once`: never left waiting (see Subagent reports). `Your prompt box`: the report waits in your box for you to edit and send, and then you can rewind to it. |
 
 The shipped default list is long: Fable, Opus, Sonnet, and Haiku ids from 4.5 upward. Each type is added to the session prompt. Delete the ones you do not use.
 
@@ -100,13 +100,17 @@ To type `claude --duckky` instead, run `duckky shell` once. A plugin can't add a
 
 ## Subagent reports
 
-When a duckky subagent finishes in the background, its report (its answer, then its workspace) lands in your prompt box. Read it, edit it if you like, and press Enter. It is then your own message, so Claude reads it and you can rewind to it and edit it later.
+When a duckky subagent finishes in the background, its report (its answer, then its workspace) reaches Claude at once. A toast tells you it went.
 
-It doesn't go straight into the chat because Claude Code only lets you rewind to messages a person sent. Anything a plugin posts is stored as a system message, and rewind skips it.
+- **Claude is working:** the report comes with Claude's very next tool result, and Claude reads it mid-turn.
+- **Claude is idle:** the report is sent straight away.
+- **Claude's turn ends, or you press Esc, before another tool call:** the report is sent right after.
 
-If you're typing when a report arrives, it waits until your box is empty. Reports that wait together go in together, separated by `---`. With no prompt box (`claude -p`), the report goes into the chat.
+It never waits as a pending message. Claude Code queues any message a plugin posts until Claude is idle, and an Esc deletes that queue. In one session a report waited a minute, and another was deleted that way.
 
-Set Reports go to = The chat to have Claude read reports at once instead, without being able to rewind to them. Claude Code also sends Claude its own notice when a background subagent finishes, which you don't see. Subagent reports chooses which subagents report.
+If you'd rather read and edit each report first, set Reports go to = Your prompt box. The report then waits in your box, never over a draft you're typing. Press Enter and it is your own message, so you can rewind to it and edit it later. Claude Code only lets you rewind to messages a person sent, never to one a plugin posted. With no prompt box (`claude -p`), the report is sent instead.
+
+Claude Code also sends Claude its own notice when a background subagent finishes, which you don't see. Subagent reports chooses which subagents report.
 
 ## Effort after spawn
 

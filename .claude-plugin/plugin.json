@@ -1,6 +1,6 @@
 {
   "name": "duckky-swarm",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "description": "Subagents on the exact model you name (Opus 4.6, Opus 5, ...), with proof of the model they ran on, forks, and resume across sessions.",
   "author": {
     "name": "buggerlogger",
@@ -52,9 +52,9 @@
     "reportsTo": {
       "type": "string",
       "title": "Reports go to",
-      "description": "Your prompt box: the report waits there (never over a draft you're typing); edit it if you like and press Enter, and it is your own message, which you can rewind to and edit. The chat: Claude reads it at once, but Claude Code only lets you rewind to messages you sent, so you can't rewind to it.",
-      "options": ["Your prompt box (recommended)", "The chat"],
-      "default": "Your prompt box (recommended)"
+      "description": "Claude, at once: never left waiting. While Claude works, the report comes with its next tool result; while it is idle, it is sent straight away; if you stop Claude first, it is sent right after. Your prompt box: the report waits there for you to edit and send (then you can rewind to it), but Claude only sees it once you press Enter.",
+      "options": ["Claude, at once (recommended)", "Your prompt box"],
+      "default": "Claude, at once (recommended)"
     }
   }
 }
