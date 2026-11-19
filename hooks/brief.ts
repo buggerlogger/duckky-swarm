@@ -21,6 +21,20 @@ export type BriefFor = { id: string; label: string; model: string; description: 
 // later, as a message of its own.
 export type Resumed = { from: string; id: string; label: string; ending: string; answer: string; workspace?: string }
 
+// A finished subagent's report, as a message in the person's chat: they see
+// it, Claude reads it, and they can rewind to it and edit it. `ending` is its
+// record's status (done, aborted, error).
+export type Report = { id: string; label: string; task: string; ending: string; answer: string; workspace?: string }
+
+export function subagentReport(r: Report): string {
+  const answer = r.answer.trim()
+  const who = { id: r.id.slice(0, 8), label: r.label, task: r.task }
+  const body = r.ending === 'done'
+    ? text('report', 'finished', { ...who, answer: answer || text('report', 'noWords') })
+    : text('report', r.ending === 'aborted' ? 'stopped' : 'ended', { ...who, ending: r.ending, lastWords: answer ? text('report', 'lastWords', { answer }) : '' })
+  return body + (r.workspace ? text('workspace', 'resultNote', { folder: r.workspace }) : '')
+}
+
 // ...and where its workspace is, when it has one.
 export function resumedReport(r: Resumed): string {
   return ending(r) + (r.workspace ? text('workspace', 'resultNote', { folder: r.workspace }) : '')

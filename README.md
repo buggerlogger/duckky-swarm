@@ -35,8 +35,17 @@ Desktop app has no `/plugin`. Hit + by the prompt, Plugins, add marketplace `bug
 - Open any subagent as a normal session: `/duckky open ac82d396` prints a `claude --resume <id>` line. Run it in another terminal and keep working with that subagent as your main agent.
 - Every duckky subagent gets its own folder in your project, like `duckky-swarm/claude-opus-5-5-a1b2c3d4-compare-trace-shapes/`. It keeps `findings.md`, `opening.md`, `closed.md`, `block.md` and `devlogs.md` up to date as it works, and does its scratch work in `temp/` so your code stays clean. `claude --resume <folder name>` opens that subagent.
 - "Opus 5.5, low effort." "Set that one's effort to high" hits the next request.
+- When a background subagent finishes, its report lands in your chat as a message. Claude reads it, and you can rewind to it and edit it like any message.
 
-`/duckky` opens a pane per subagent. `q` quits. `/duckky list` is model, task, status, id, and the `claude --resume` line for each.
+`/duckky` opens a pane per subagent. `q` quits. `/duckky list` is model, task, status, id, and the `claude --resume` line for each. `/duckky sessions` lists every duckky session on this computer, in every project.
+
+From any terminal, after `npm install -g github:buggerlogger/duckky-swarm`:
+
+```
+duckky                                   list them all and pick one
+duckky claude-haiku-5-5-903bfc9a-test-add-in-math.mjs   open it in its own project
+duckky open 3 --here                     open number 3 in the folder you're in
+```
 
 Needs Node. Windows opens the window. Other systems get the command to paste.
 

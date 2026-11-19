@@ -18,7 +18,7 @@ export type BandAgent = {
   activity: string
 }
 
-export const STAGE_W = 14
+export const STAGE_W = 18   // "Opus 5 fork xhigh" whole; the character is 12
 export const rasterKey = (id: string) => `dk-${id}`
 
 const cut = (s: string) => (s.length > STAGE_W ? `${s.slice(0, STAGE_W - 1)}…` : s)

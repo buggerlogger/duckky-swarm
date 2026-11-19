@@ -495,7 +495,8 @@ test('a copy the person has worked in as a session is never written over', { opt
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
   await $.agent.spawn(spawn('duckky-swarm:opus-4-6', 'reverse obf.js'))
   await $.classic.SubagentStop({ stop_hook_active: false, agent_id: 'a1b2c3d4e5', agent_transcript_path: TRANSCRIPT, agent_type: 'duckky-swarm:opus-4-6' } as never)
-  expect(writes).toEqual([])
+  expect(writes.filter((p) => p.endsWith('.jsonl'))).toEqual([])   // the copy is theirs; only its index entry is refreshed
+  expect(writes.map((p) => p.split(String.fromCharCode(92)).join('/'))).toEqual([`C:/Users/t/.claude/duckky-swarm/sessions/${sid}.json`])
 })
 
 test('resume_subagent to a subagent still running queues the message for it, and says so: nothing is resumed', async ($, on) => {
@@ -572,4 +573,74 @@ test('a subagent that carries on as a new one keeps its workspace: no second fol
   // no new folder (the .gitignore is the whole duckky-swarm folder's)
   expect(writes.slice(made).filter((p) => p.includes('/duckky-swarm/') && !p.startsWith(folder) && !p.endsWith('/duckky-swarm/.gitignore'))).toEqual([])
   await call   // its result needs the new agent's id, which a plugin spawn gets only live
+})
+
+// --- reports in the chat ---------------------------------------------------------
+
+async function reportsAfter($: Engine, on: On, background: boolean, type = 'duckky-swarm:opus-5-5') {
+  engine(on, 'claude-opus-5-5')
+  const submitted: string[] = []
+  on('prompt.submit', (_, e) => (submitted.push(e.text), { text: e.text }))
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn({ ...spawn(type, 'Compare the trace shapes'), background })
+  await $.turn.complete({ ...(finished('a1b2c3d4e5', 'claude-opus-5-5') as object), answer: 'The shapes differ at bid 277.' } as never)
+  return submitted
+}
+
+test('a background duckky subagent\'s report is posted in the chat when it finishes, with its workspace', async ($, on) => {
+  const submitted = await reportsAfter($, on, true)
+  expect(submitted.length).toBe(1)
+  expect(submitted[0]).toMatch(/^\[duckky-swarm\] Report from subagent a1b2c3d4 \(Opus 5\.5\), task "Compare the trace shapes":\n\nThe shapes differ at bid 277\. Its workspace: \/w\/duckky-swarm\/claude-opus-5-5-[0-9a-f]{8}-compare-the-trace-shapes\.$/)
+})
+
+test('a foreground subagent\'s report is its Agent result, not posted again (by default)', async ($, on) => {
+  expect(await reportsAfter($, on, false)).toEqual([])
+})
+
+test('Reports in the chat = Every subagent posts a foreground one too', { options: { reports: 'Every subagent' } }, async ($, on) => {
+  expect((await reportsAfter($, on, false)).length).toBe(1)
+})
+
+test('Reports in the chat = Off posts none', { options: { reports: 'Off' } }, async ($, on) => {
+  expect(await reportsAfter($, on, true)).toEqual([])
+})
+
+test('a built-in subagent posts no report and gets no session copy', async ($, on) => {
+  expect(await reportsAfter($, on, true, 'general-purpose')).toEqual([])
+})
+
+// --- one subagent, never a guess ---------------------------------------------------
+
+test('words that match several subagents are refused with the list: a guess could resume the wrong one', async ($, on) => {
+  const { store } = engine(on, 'claude-opus-5-5')
+  const base = { type: 'duckky-swarm:opus-5-5', label: 'Opus 5.5', model: 'claude-opus-5-5', requested: 'claude-opus-5-5', answeredBy: null, fork: false, sessionId: 'old', cwd: '/w', status: 'done', resumes: 0, outputTokens: 0 }
+  store.set('agent:aaaa1111', { ...base, id: 'aaaa1111', description: 'trace the bid 277 buffer', startedAt: Date.now() - 1000 })
+  store.set('agent:bbbb2222', { ...base, id: 'bbbb2222', description: 'trace the bid 24 buffer', startedAt: Date.now() - 2000 })
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  const r = await $.tool.call({ tool: 'mcp__duckky-swarm__resume_subagent', agent: 'trace buffer', message: 'go on' } as never) as { result?: unknown }
+  expect(String(r.result)).toBe('Several subagents match "trace buffer": aaaa1111 "trace the bid 277 buffer", bbbb2222 "trace the bid 24 buffer". Name the one you mean by its id.')
+})
+
+// --- the session index ------------------------------------------------------------
+
+test('every duckky session copy is indexed, and /duckky sessions lists the index, every project\'s', async ($, on) => {
+  const index = 'C:/Users/t/.claude/duckky-swarm/sessions'
+  const other = { sessionId: '11111111-2222-4333-8444-555555555555', name: 'claude-opus-5-abcd1234-map-the-code', cwd: 'C:\\elsewhere\\app', file: 'x', model: 'claude-opus-5', task: 'map the code', agentId: 'zz', updated: '2026-11-01T00:00:00.000Z' }
+  const files: Record<string, string> = { [TRANSCRIPT]: REFUSED, [`${index}/11111111-2222-4333-8444-555555555555.json`]: JSON.stringify(other) }
+  const { store } = engine(on, 'claude-opus-4-6', files)
+  on('fs.write', (_, e) => { files[e.path.split(String.fromCharCode(92)).join('/')] = e.text; return { value: undefined } })
+  on('fs.list', (_, e) => ({ value: e.path.split(String.fromCharCode(92)).join('/') === index
+    ? Object.keys(files).filter((k) => k.startsWith(`${index}/`)).map((k) => ({ name: k.slice(index.length + 1), kind: 'file' as const, size: 1, mtimeMs: 1, isLink: false }))
+    : [] }))
+  on('classic.SubagentStop', () => ({}))
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn(spawn('duckky-swarm:opus-4-6', 'reverse obf.js'))
+  await $.classic.SubagentStop({ stop_hook_active: false, agent_id: 'a1b2c3d4e5', agent_transcript_path: TRANSCRIPT, agent_type: 'duckky-swarm:opus-4-6' } as never)
+  const rec = store.get('agent:a1b2c3d4e5') as { sessionCopy: string; workspaceName: string }
+  expect(JSON.parse(files[`${index}/${rec.sessionCopy}.json`] ?? '{}')).toMatchObject({ sessionId: rec.sessionCopy, name: rec.workspaceName, model: 'claude-opus-4-6', task: 'reverse obf.js', agentId: 'a1b2c3d4e5' })
+  const listed = (await $.command.run(duckky('sessions'))).text
+  expect(listed).toMatch(new RegExp(`^  1  ${rec.workspaceName.replace(/\./g, '\\.')}`))   // the newest first
+  expect(listed).toContain('  2  claude-opus-5-abcd1234-map-the-code')
+  expect(listed).toContain('C:\\elsewhere\\app  · claude-opus-5')
+  expect((await $.command.run(duckky('sessions map code'))).text).toContain('cd "C:\\elsewhere\\app"; claude --resume 11111111-2222-4333-8444-555555555555 --model claude-opus-5')
 })

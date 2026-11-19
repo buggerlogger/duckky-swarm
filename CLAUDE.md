@@ -164,6 +164,32 @@ names. `.claude-plugin/plugin.json` (with the `/config` settings under
   where missing. Proved live: the subagent kept all five notes and put its
   test script in temp/, src/ untouched, and `claude --resume <folder name>`
   opened it. Setting: `workspaces` (on).
+- Reports in the chat (`reports`: background by default, every, off): at a
+  duckky subagent's `turn.complete` its report (`subagentReport`, messages
+  `report`) goes to `$.prompt.submit`, a real user message the person sees,
+  Claude reads, and the person can rewind and edit (proved live: isMeta
+  false, "The duckky-swarm plugin sent a message: [duckky-swarm] Report
+  from subagent..."). Claude Code still sends its own hidden task notice, so
+  Claude gets it twice; it handled that fine live. Not on a refusal (the
+  refusal report went already), not for built-in subagents.
+- The session index: `copyAsSession` also writes
+  `<config>/duckky-swarm/sessions/<sid>.json` (one file per copy, so two
+  sessions never race), even when it leaves a diverged copy alone.
+  `bin/sessions.mjs` (pure, shared) reads it for `/duckky sessions` and for
+  `bin/duckky.mjs`, the `duckky` command (package.json `bin`; installed with
+  `npm install -g github:buggerlogger/duckky-swarm`). `duckky` opens a
+  session in its own project folder (Claude Code finds sessions by the
+  folder it runs in) or, `--here`, copies it into the current folder's
+  project first; `--print` and `-- <args>` exist for testing without a
+  window. On Windows claude is claude.cmd: one quoted command line to a
+  shell (an args array with shell:true prints DEP0190). Plugins cannot add
+  flags to `claude`, so `claude --duckky` is impossible.
+- Your own texts: `~/.claude/duckky-swarm/messages.json`, laid over the
+  plugin's file (`useMessages(plugin, own)`), so an update keeps them.
+- Matching: `findMatches` returns every match; `findAgent` returns one or
+  none, and the tools answer `resumeTool.ambiguous` with the list instead of
+  guessing. A subagent and the one it carried on as are one lineage
+  (`resumedFrom`): only the newest counts.
 - ⛔ Write test code with backslashes (regexes, Windows paths) with the
   Edit/Write tools, never through a bash heredoc or `node -e`: the
   backslashes are lost on the way (five times in one session).

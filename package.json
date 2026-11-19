@@ -1,0 +1,14 @@
+{
+  "name": "duckky-swarm",
+  "version": "0.3.6",
+  "description": "The duckky command: every Duckky Swarm subagent session on this computer, opened as a normal Claude Code session from any folder.",
+  "type": "module",
+  "bin": {
+    "duckky": "bin/duckky.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "Apache-2.0",
+  "repository": "github:buggerlogger/duckky-swarm"
+}

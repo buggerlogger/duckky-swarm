@@ -1,6 +1,6 @@
 {
   "name": "duckky-swarm",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Subagents on the exact model you name (Opus 4.6, Opus 5, ...), with proof of the model they ran on, forks, and resume across sessions.",
   "author": {
     "name": "buggerlogger",
@@ -41,6 +41,13 @@
       "title": "Workspace folders",
       "description": "Give every duckky subagent its own folder in the project, duckky-swarm/<model>-<id>-<task>/, with findings.md, opening.md, closed.md, block.md, devlogs.md and temp/ for its scratch work. The folder's name opens it as a session: claude --resume <folder name>.",
       "default": true
+    },
+    "reports": {
+      "type": "string",
+      "title": "Reports in the chat",
+      "description": "When a duckky subagent finishes, its report is posted in your chat as a message: you see it, Claude reads it, and you can rewind to it and edit it. A background subagent's answer otherwise reaches Claude only as a notice you don't see.",
+      "options": ["Background subagents (recommended)", "Every subagent", "Off"],
+      "default": "Background subagents (recommended)"
     }
   }
 }

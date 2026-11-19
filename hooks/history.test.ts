@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
-import { hookFailed, refusalBrief, resumedReport } from './brief.ts'
+import { hookFailed, refusalBrief, resumedReport, subagentReport } from './brief.ts'
 import { newestWithin, refusalAt, refusalScene, parseTranscript, sessionLines, transcriptLines } from './history.ts'
 import { retain, type AgentRecord } from './records.ts'
-import { findAgent } from './register.ts'
+import { findAgent, findMatches } from './register.ts'
 
 test('the newest lines are kept, with a marker for what was left out', () => {
   expect(newestWithin(['one', 'two', 'three'], 100)).toBe('one\ntwo\nthree')
@@ -104,4 +104,24 @@ test('a resumed subagent\'s answer reaches the main agent as a message of its ow
 test('a failed hook of the plugin\'s own tools says why, not that no hook answered', () => {
   expect(hookFailed('resume_subagent', { kind: 'timeout', budget: 1000 })).toBe('duckky-swarm: resume_subagent failed: it ran past the 10 s a hook has')
   expect(hookFailed('set_subagent_effort', { kind: 'throw', message: 'boom', budget: 1000 })).toBe('duckky-swarm: set_subagent_effort failed: boom')
+})
+
+test('several matches are no match, but a subagent and the one it carried on as are one lineage: the newest', () => {
+  const rows = [
+    { ...rec('c3', 'resume: trace the buffer', 'done', 0), resumedFrom: 'a1' },
+    rec('a1', 'trace the buffer', 'done', 1),
+    rec('b2', 'trace a buffer twice', 'done', 2),
+  ]
+  expect(findMatches(rows, 'trace buffer').map((r) => r.id)).toEqual(['c3', 'b2'])   // a1 is c3's earlier generation
+  expect(findAgent(rows, 'trace buffer')).toBeUndefined()
+  expect(findAgent(rows, 'trace the buffer')?.id).toBe('c3')
+  expect(findAgent(rows, 'a1')?.id).toBe('a1')   // an id is always that one
+})
+
+test('a subagent\'s report for the chat: its answer, or how it ended, then its workspace', () => {
+  const base = { id: 'a1b2c3d4e5f6', label: 'Opus 5.5', task: 'map the code' }
+  expect(subagentReport({ ...base, ending: 'done', answer: 'Three modules.', workspace: '/w/duckky-swarm/x' }))
+    .toBe('[duckky-swarm] Report from subagent a1b2c3d4 (Opus 5.5), task "map the code":\n\nThree modules. Its workspace: /w/duckky-swarm/x.')
+  expect(subagentReport({ ...base, ending: 'aborted', answer: '' })).toBe('[duckky-swarm] Subagent a1b2c3d4 (Opus 5.5) was stopped before it finished its task "map the code".')
+  expect(subagentReport({ ...base, ending: 'error', answer: 'half' })).toContain('ended (error) before it finished its task "map the code". Its last words:\n\nhalf')
 })

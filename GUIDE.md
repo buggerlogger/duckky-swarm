@@ -23,6 +23,7 @@ Open `/config` after install. The defaults are already filled in. Claude Code ma
 | Keep subagents across sessions | on | The store keeps model, task, and transcript so a later session can resume. |
 | Character | Clawd | Clawd or Duckky Ducks, above the prompt and in `/duckky`. |
 | Workspace folders | on | A folder per duckky subagent in the project, `duckky-swarm/<model>-<id>-<task>/`. See Workspaces. |
+| Reports in the chat | Background subagents | A finished subagent's report posted in your chat as a message. `Every subagent` adds foreground ones, whose result is otherwise the Agent tool's output. `Off` posts none. |
 
 The shipped default list is long: Fable, Opus, Sonnet, and Haiku ids from 4.5 upward. Each type is added to the session prompt. Delete the ones you do not use.
 
@@ -75,6 +76,30 @@ Run it in a terminal in the same folder. You get that subagent's whole conversat
 It is a copy. The subagent in the first session doesn't change. Once you've typed in the copy, the plugin stops rewriting it, so your work there is kept. Each copy is a full transcript, and they show in `/resume` titled `duckky-swarm: <task>`.
 
 If Keep subagents is off, or the store was cleared, the plugin looks in Claude Code's own files for this project: `projects/<cwd>/<session>/subagents/agent-<id>.meta.json` and the matching `.jsonl`.
+
+## Every session, in every project
+
+Each duckky subagent's session copy is listed in an index in Claude Code's folder, `~/.claude/duckky-swarm/sessions/`, one small file per copy. Two places read it:
+
+- `/duckky sessions [words]` inside Claude Code.
+- The `duckky` command in any terminal. Install it once with `npm install -g github:buggerlogger/duckky-swarm`.
+
+```
+duckky                         list, then ask which to open
+duckky list [words]            list (only those matching)
+duckky <name|number|id>        open it in its own project folder
+duckky open <...> --here       open it in the folder you're in
+duckky open <...> --print      print the command instead of running it
+duckky open <...> -- <args>    pass <args> on to claude
+```
+
+Claude Code finds a session by the folder it runs in, so `duckky` changes to the session's project folder first. With `--here` it copies the session into the folder you're in and opens it there. The subagent then works in that folder, while its workspace stays in the old project.
+
+`claude --duckky` isn't possible: plugins can't add flags to `claude` itself.
+
+## Reports in the chat
+
+When a duckky subagent finishes in the background, its report is posted in your chat as a message from the plugin: its answer, then its workspace. Claude reads it, and you can rewind to it and edit it like any message. Claude Code also sends Claude its own notice of the same finish, which you don't see, so Claude gets the result twice. Set Reports in the chat in `/config` to change which subagents report.
 
 ## Effort after spawn
 
@@ -140,9 +165,11 @@ Clawd is the default. Duckky Ducks uses the same moves. The done duck wears sung
 
 ## The words: messages.json
 
-Every text sent to Claude has a key in `messages.json`, by section: `agentType`, `fork`, `resumeTool`, `resumePrompt`, `resumedAnswer`, `effortTool`, `effort`, `refusalReport`, `sendMessage`, `hookFailed`. A text is a string, or a list of strings that are its lines. `{label}`, `{id}`, `{task}` and the rest are filled in when it is sent, and each section's `_about` lists them.
+Every text sent to Claude has a key in `messages.json`, by section: `agentType`, `fork`, `resumeTool`, `resumePrompt`, `resumedAnswer`, `report`, `effortTool`, `effort`, `refusalReport`, `hookFailed`, `workspace`. A text is a string, or a list of strings that are its lines. `{label}`, `{id}`, `{task}` and the rest are filled in when it is sent, and each section's `_about` lists them.
 
-The plugin reads the file when a session starts. Under `claude --plugin-dir` a save reloads it. Elsewhere, run `/reload-plugins`. An installed copy lives in Claude Code's plugin cache, and an update replaces it.
+The plugin reads the file when a session starts. Under `claude --plugin-dir` a save reloads it. Elsewhere, run `/reload-plugins`.
+
+An installed copy lives in Claude Code's plugin cache, and an update replaces it. To keep your changes, put only the texts you change in `~/.claude/duckky-swarm/messages.json`, with the same sections and keys. The plugin lays that file over its own, and an update never touches it.
 
 A text you delete uses the built-in wording in `hooks/messages.ts`. So does one with the wrong type. Invalid JSON uses all of the built-in texts. A `{name}` the text is never given stays as written. Each problem is a toast and a log line. `node --test messages.test.mjs` checks the file the same way before you start a session.
 
@@ -152,7 +179,7 @@ A text you delete uses the built-in wording in `hooks/messages.ts`. So does one 
 claude --plugin-dir .          this folder as the plugin; save reloads it
 claude plugin validate .       manifest, marketplace, hooks
 claude plugin test .           hooks/*.test.ts
-node --test messages.test.mjs viewer/viewer.test.mjs characters/sprites.test.mjs characters/ducks.test.mjs
+node --test messages.test.mjs bin/sessions.test.mjs viewer/viewer.test.mjs characters/sprites.test.mjs characters/ducks.test.mjs
 node viewer/duckky-view.mjs <subagents folder> --once
 ```
 

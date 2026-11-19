@@ -47,3 +47,16 @@ test('each mistake in messages.json is named, and only that text falls back to t
   expect(text('effort', 'takesNone', { label: 'L' })).toBe('none for {lable}')               // the user's, as written
   useMessages(null)
 })
+
+test('the person\'s own messages.json is laid over the plugin\'s, so an update keeps their words', () => {
+  const plugin = JSON.stringify({ effort: { takes: 'plugin: {label} {levels}', takesNone: 'plugin: none for {label}' } })
+  const own = JSON.stringify({ effort: { takesNone: 'mine: {label} has no effort' } })
+  expect(useMessages(plugin, own)).toEqual([])
+  expect(text('effort', 'takesNone', { label: 'Haiku 4.5' })).toBe('mine: Haiku 4.5 has no effort')   // theirs wins
+  expect(text('effort', 'takes', { label: 'L', levels: 'low' })).toBe('plugin: L low')               // the plugin's where theirs has none
+  // a broken own file is named as theirs and ignored: the plugin's texts stand
+  expect(useMessages(plugin, '{ nope')[0]).toMatch(/^your messages\.json is not valid JSON \(.+\): it is ignored$/)
+  expect(text('effort', 'takesNone', { label: 'L' })).toBe('plugin: none for L')
+  expect(useMessages(plugin, JSON.stringify({ effort: { takes: 7 } }))).toEqual(["your messages.json: effort.takes must be a string or a list of strings: its plugin's text is used"])
+  useMessages(null)
+})

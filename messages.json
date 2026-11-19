@@ -4,7 +4,8 @@
     "A text is a string, or a list of strings that are its lines. {name} is filled in when it is sent; each section's _about says what.",
     "Delete a text to use the built-in one. Keys starting with _ are notes and are never sent.",
     "A mistake (not valid JSON, a wrong type, an unknown key or {name}) is shown as a toast when a session starts, and the built-in text is used for that one.",
-    "Saved changes reach a session that runs this folder (claude --plugin-dir) at once; anywhere else, run /reload-plugins."
+    "Saved changes reach a session that runs this folder (claude --plugin-dir) at once; anywhere else, run /reload-plugins.",
+    "A plugin update replaces this file. To keep your changes through updates, put only the texts you change in ~/.claude/duckky-swarm/messages.json (the same sections and keys): it is laid over this one."
   ],
   "agentType": {
     "_about": "The main agent's list of agent types (one per model in /config, and its fork) and the instructions each subagent starts with. {label} is like \"Opus 4.6\", {id} \"claude-opus-4-6\", {name} \"opus-4-6\". {effort} in description is the effort or noEffort text; {levels} the model's effort levels; whenLeftOut is added when /config gives the model a default effort.",
@@ -49,6 +50,7 @@
     "open": " The user can also open it as a main session, in a terminal in {cwd}: {command}",
     "withEffort": ", effort {effort}",
     "noMatch": "No subagent matches \"{query}\". Recent: {recent}",
+    "ambiguous": "Several subagents match \"{query}\": {list}. Name the one you mean by its id.",
     "noneKept": "none kept",
     "noTranscript": "Found {id}, but not its transcript, so there is nothing to resume from.",
     "couldNot": "Could not resume {id}: {reason}",
@@ -82,6 +84,22 @@
     "stopped": "[duckky-swarm] Resumed subagent {from} (now {id}, {label}) was stopped before it finished.{lastWords}",
     "refused": "[duckky-swarm] Resumed subagent {from} (now {id}, {label}) stopped on a refusal.{lastWords}",
     "ended": "[duckky-swarm] Resumed subagent {from} (now {id}, {label}) ended ({ending}) before it finished.{lastWords}",
+    "lastWords": [
+      " Its last words:",
+      "",
+      "{answer}"
+    ]
+  },
+  "report": {
+    "_about": "A finished subagent's report, posted in the person's chat as a message (Reports in the chat in /config): Claude reads it, the person can rewind to it and edit it. finished when it is done, stopped or ended otherwise; {lastWords} is the lastWords text when it said anything; the workspace resultNote follows.",
+    "finished": [
+      "[duckky-swarm] Report from subagent {id} ({label}), task \"{task}\":",
+      "",
+      "{answer}"
+    ],
+    "noWords": "(it ended without a word)",
+    "stopped": "[duckky-swarm] Subagent {id} ({label}) was stopped before it finished its task \"{task}\".{lastWords}",
+    "ended": "[duckky-swarm] Subagent {id} ({label}) ended ({ending}) before it finished its task \"{task}\".{lastWords}",
     "lastWords": [
       " Its last words:",
       "",

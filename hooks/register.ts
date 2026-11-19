@@ -20,10 +20,11 @@
 // the same model with its old transcript.
 
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
+import { INDEX_DIR, listing, matchSessions, openLine, parseEntries } from '../bin/sessions.mjs'
 import { characterFor } from '../characters/index.mjs'
 import { activityOf, shownActivity } from '../viewer/model.mjs'
 import { bandTree, rasterKey, stagesFor, type BandAgent } from './band.tsx'
-import { hookFailed, refusalBrief, resumedReport } from './brief.ts'
+import { hookFailed, refusalBrief, resumedReport, subagentReport } from './brief.ts'
 import { asSession, diverged, resumeCommand, sessionIdFor } from './session-copy.ts'
 import { newWorkspace, workspaceFiles, workspaceKey, workspaceRules, type Workspace } from './workspace.ts'
 import { text, useMessages } from './messages.ts'
@@ -77,6 +78,17 @@ const effortFor = new Map<string, Effort>()    // agent id -> the effort the mai
 const pendingEffort = new Map<string, Effort>()
 const promptKey = (text: string) => `${text.length}:${text.slice(0, 400)}`
 let workspacesOn = true       // the Workspace folders setting
+// Reports in the chat setting: which finished subagents post their report as
+// a message in the person's chat
+let reports: 'background' | 'all' | 'off' = 'background'
+const reportsFor = (setting: unknown): typeof reports =>
+  /every/i.test(String(setting ?? '')) ? 'all' : /off/i.test(String(setting ?? '')) ? 'off' : 'background'
+// One file per session copy, in every project, in Claude Code's own folder
+// (INDEX_DIR, bin/sessions.mjs): what /duckky sessions and `duckky` list.
+export type SessionEntry = {
+  sessionId: string; name: string; cwd: string; file: string; model: string; task: string
+  agentId: string; workspace?: string; updated: string
+}
 // A subagent that carries on as a new one keeps its workspace: resume_subagent
 // writes the workspace into the prompt and leaves it here, by that prompt, for
 // the spawn hook, which then makes no new one and adds nothing to the prompt.
@@ -125,13 +137,15 @@ function restage($: EngineInterface) {
   $.ui.invalidate('ui.render')
 }
 
-// A refused response of a subagent: counted on its record, and its Clawd
-// shakes its head while the request is asked again.
+// A refused response of a subagent: counted on its record, and its character
+// holds up the red sign.
 function noteRefusal($: EngineInterface, agentId: string, count: number) {
   const r = live.get(agentId)
   if (!r) return
   r.refusals = count
-  setActivity($, r, 'retrying')
+  // the red sign, not "retrying": the plugin no longer asks again, Claude Code
+  // does (beneath it); a step after it moves the scene on
+  setActivity($, r, 'refused')
 }
 
 function setActivity($: EngineInterface, r: AgentRecord, activity: string) {
@@ -162,13 +176,31 @@ async function known($: EngineInterface): Promise<AgentRecord[]> {
 
 // "a2f57463" (an id or its first characters, as /duckky shows it), or words
 // from its task; the newest match wins.
-export function findAgent(rows: readonly AgentRecord[], query: string): AgentRecord | undefined {
+// Every subagent a query names: its id, every id the prefix starts, or every
+// task holding all the words. A subagent that carried on as a new one is one
+// lineage, not two: the generation it resumed is dropped, the newest kept.
+export function findMatches(rows: readonly AgentRecord[], query: string): AgentRecord[] {
   const q = query.trim().toLowerCase()
-  if (!q) return undefined
-  const byId = rows.find((r) => r.id.toLowerCase() === q) ?? (q.length >= 4 ? rows.find((r) => r.id.toLowerCase().startsWith(q)) : undefined)
-  if (byId) return byId
+  if (!q) return []
+  const exact = rows.find((r) => r.id.toLowerCase() === q)
+  if (exact) return [exact]
+  const byPrefix = q.length >= 4 ? rows.filter((r) => r.id.toLowerCase().startsWith(q)) : []
   const words = q.split(/\s+/)
-  return rows.find((r) => words.every((w) => r.description.toLowerCase().includes(w)))
+  const hits = byPrefix.length ? byPrefix : rows.filter((r) => words.every((w) => r.description.toLowerCase().includes(w)))
+  const superseded = new Set(hits.map((r) => r.resumedFrom).filter(Boolean))
+  return hits.filter((r) => !superseded.has(r.id))
+}
+
+// The one subagent a query names; none when it names several: a guess could
+// resume the wrong subagent, so the caller lists them (`ambiguous`).
+export function findAgent(rows: readonly AgentRecord[], query: string): AgentRecord | undefined {
+  const m = findMatches(rows, query)
+  return m.length === 1 ? m[0] : undefined
+}
+
+const ambiguous = (rows: readonly AgentRecord[], query: string) => {
+  const m = findMatches(rows, query)
+  return m.length > 1 ? text('resumeTool', 'ambiguous', { query, list: m.slice(0, 8).map((r) => `${r.id.slice(0, 8)} "${r.description}"`).join(', ') }) : ''
 }
 
 // Claude Code's own folder: CLAUDE_CONFIG_DIR, else ~/.claude.
@@ -274,10 +306,20 @@ async function copyAsSession($: EngineInterface, r: AgentRecord): Promise<string
   const sid = sessionIdFor(r.workspaceKey ?? r.id)
   const path = `${await configDir($)}/projects/${r.cwd.replace(/[^A-Za-z0-9]/g, '-')}/${sid}.jsonl`
   const before = await $.fs.read(path).then((t) => String(t), () => null)
-  if (before === null || !diverged(before, jsonl)) await $.fs.write(path, asSession(jsonl, sid, r.workspaceName ?? `${PLUGIN}: ${r.description}`))
+  const title = r.workspaceName ?? `${PLUGIN}: ${r.description}`
+  if (before === null || !diverged(before, jsonl)) await $.fs.write(path, asSession(jsonl, sid, title))
   if (r.sessionCopy !== sid) { r.sessionCopy = sid; await write($, r) }
+  // the index every project's copies are listed from (/duckky sessions and
+  // the `duckky` command): one file per copy, so two sessions never race
+  const entry: SessionEntry = {
+    sessionId: sid, name: title, cwd: r.cwd, file: path, model: startedModel(r), task: r.description,
+    agentId: r.id, workspace: r.workspace, updated: new Date().toISOString(),
+  }
+  await $.fs.write(`${await configDir($)}/${INDEX_DIR}/${sid}.json`, `${JSON.stringify(entry, null, 2)}\n`).catch(() => undefined)
   return sid
 }
+
+const isDuckky = (r: AgentRecord) => models.some((m) => r.type === `${PLUGIN}:${m.name}` || r.type === `${PLUGIN}:${m.name}-fork`) || !!r.workspace
 
 const workspaceOf = (r: AgentRecord): Workspace | undefined =>
   r.workspace && r.workspaceName && r.workspaceKey ? { folder: r.workspace, name: r.workspaceName, key: r.workspaceKey } : undefined
@@ -291,17 +333,20 @@ async function makeWorkspace($: EngineInterface, ws: Workspace, task: string, mo
   }
 }
 
-// A stopped subagent's copy, written again a moment later: Claude Code puts
+// A stopped subagent's copy, written again a few times after: Claude Code puts
 // its last reply in the transcript just AFTER its stop (measured live: a copy
 // made at the stop held the question and not the answer, so the session that
-// opened it said it had not replied). Driven by the clock from session.start.
-const copyDue = new Map<string, number>()   // agent id -> when to write its copy again
-const COPY_AGAIN_MS = 3000
+// opened it said it had not replied), and a long reply lands later still.
+// Driven by the clock from session.start.
+const copyDue = new Map<string, number[]>()   // agent id -> when to write its copy again
+export const COPY_AGAIN_MS = [3_000, 15_000, 60_000]
 async function copyAgain($: EngineInterface) {
   const now = Date.now()
-  for (const [id, at] of copyDue) {
-    if (at > now) continue
-    copyDue.delete(id)
+  for (const [id, times] of copyDue) {
+    if ((times[0] ?? Infinity) > now) continue
+    const left = times.filter((t) => t > now)
+    if (left.length) copyDue.set(id, left)
+    else copyDue.delete(id)
     const r = live.get(id)
     if (r) await copyAsSession($, r).catch(() => null)
   }
@@ -313,11 +358,14 @@ async function copyAgain($: EngineInterface) {
 const openCommand = (r: AgentRecord) => (r.sessionCopy ? resumeCommand(r.workspaceName ?? r.sessionCopy, startedModel(r)) : '')
 const openText = (r: AgentRecord) => (r.sessionCopy ? text('resumeTool', 'open', { cwd: r.cwd, command: openCommand(r) }) : '')
 
-// The texts sent to Claude, from messages.json at the plugin's root: the
-// built-in ones where it has none, and each mistake in it told once.
+// The texts sent to Claude, from messages.json at the plugin's root, and the
+// person's own over it (~/.claude/duckky-swarm/messages.json: a plugin update
+// replaces the plugin's folder, never that one): the built-in ones where
+// neither has a text, and each mistake told once.
+export const OWN_MESSAGES = 'duckky-swarm/messages.json'
 async function loadMessages($: EngineInterface) {
-  const file = await $.fs.read(`${$.plugin.root}/messages.json`).then((t) => String(t), () => null)
-  const problems = useMessages(file)
+  const read = (path: string) => $.fs.read(path).then((t) => String(t), () => null)
+  const problems = useMessages(await read(`${$.plugin.root}/messages.json`), await read(`${await configDir($)}/${OWN_MESSAGES}`))
   for (const p of problems) $.ui.log(`${PLUGIN}: ${p}`)
   if (problems.length) $.ui.toast(`${PLUGIN}: messages.json: ${problems[0]}${problems.length > 1 ? ` (and ${problems.length - 1} more, in the log)` : ''}`)
 }
@@ -328,6 +376,7 @@ export const register: Register = (on, options) => {
   const contextForks = options.forkMode !== 'true'
   keep = options.keepAgents !== false
   workspacesOn = options.workspaces !== false
+  reports = reportsFor(options.reports)
   character = characterFor(options.character)
   live.clear()
 
@@ -374,7 +423,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'duckky',
       description: 'Duckky Swarm: open the live window of this session\'s subagents (list: the model each really ran on)',
-      argumentHint: '[list | open <id>]',
+      argumentHint: '[list | open <id> | sessions [words]]',
     })
     if (keep) {
       const kept = await allAgents($)
@@ -520,10 +569,14 @@ export const register: Register = (on, options) => {
       r.transcript = e.agent_transcript_path
       if (e.last_assistant_message) r.lastAnswer = e.last_assistant_message.slice(0, 4000)
       await write($, r)
-      // its transcript as it stands, openable as a main session; again once
-      // its last reply has landed
-      await copyAsSession($, r).catch(() => null)
-      copyDue.set(r.id, Date.now() + COPY_AGAIN_MS)
+      // a duckky subagent's transcript as it stands, openable as a main
+      // session; again once its last reply has landed (a built-in subagent
+      // gets a copy only from /duckky open: every one would fill /resume)
+      if (isDuckky(r)) {
+        await copyAsSession($, r).catch(() => null)
+        const now = Date.now()
+        copyDue.set(r.id, COPY_AGAIN_MS.map((ms) => now + ms))
+      }
     }
     return next(e)
   }).catch(($, e, next) => next(e))   // SubagentStop can block a stop: a failure here must not
@@ -568,6 +621,14 @@ export const register: Register = (on, options) => {
       if (ending !== 'refusal' || !r?.background) {
         await $.prompt.submit({ text: resumedReport({ ...resumed, id: e.agentId, ending, answer: e.answer }) }).catch(() => undefined)
       }
+    } else if (r && r.status !== 'refusal' && isDuckky(r) && (reports === 'all' || (reports === 'background' && r.background))) {
+      // Its report as a message in the person's chat: they see it, Claude
+      // reads it, and like any message they can rewind to it and edit it. A
+      // background subagent's answer otherwise reaches the main agent only as
+      // a notice the person does not see. (A refusal sent its report above.)
+      await $.prompt.submit({
+        text: subagentReport({ id: r.id, label: r.label, task: r.description, ending: r.status, answer: e.answer, workspace: r.workspace }),
+      }).catch(() => undefined)
     }
     return done
   })
@@ -580,6 +641,8 @@ export const register: Register = (on, options) => {
       return { result: text('effort', 'notAnEffort', { effort: String(effortText), levels: EFFORTS.join(', ') }), isError: true }
     }
     const rows = await known($)
+    const several = ambiguous(rows, String(agent ?? ''))
+    if (several) return { result: several, isError: true }
     let r = findAgent(rows, String(agent ?? ''))
     if (!r) {
       // not in the store: look where Claude Code keeps it, and keep it again
@@ -619,6 +682,7 @@ export const register: Register = (on, options) => {
       if (sent.isDelivered && r.status === 'running') return { result: text('resumeTool', 'queued', { id: r.id.slice(0, 8) }) + where }
       if (sent.isDelivered) {
         r.resumes += 1
+        r.background = true   // it runs on while the main agent goes on: its report comes as a message
         await write($, r)
         return { result: text('resumeTool', 'resumedSame', { id: r.id.slice(0, 8), model, withEffort, open: openText(r) }) + where }
       }
@@ -684,7 +748,10 @@ ${workspaceRules(ws)}` : body
     const { agent, effort: effortText } = e as unknown as { agent?: unknown; effort?: unknown }
     const effort = parseEffort(effortText)
     if (effort === undefined) return { result: text('effort', 'notAnEffort', { effort: String(effortText), levels: EFFORTS.join(', ') }), isError: true }
-    const r = findAgent(await known($), String(agent ?? ''))
+    const rows = await known($)
+    const several = ambiguous(rows, String(agent ?? ''))
+    if (several) return { result: several, isError: true }
+    const r = findAgent(rows, String(agent ?? ''))
     if (!r) return { result: text('effortTool', 'noMatch', { query: String(agent) }), isError: true }
     const id = r.id.slice(0, 8)
     if (!live.has(r.id) || r.status !== 'running') {
@@ -708,11 +775,30 @@ ${workspaceRules(ws)}` : body
     const [verb = '', ...rest] = e.args.trim().split(/\s+/)
     // /duckky open <id>: the subagent as a main session, written now
     if (verb.toLowerCase() === 'open') {
-      const r = findAgent(await known($), rest.join(' ')) ?? await findOnDisk($, rest.join(' '))
+      const rows = await known($)
+      const several = ambiguous(rows, rest.join(' '))
+      if (several) return { text: several }
+      const r = findAgent(rows, rest.join(' ')) ?? await findOnDisk($, rest.join(' '))
       if (!r) return { text: `No subagent matches "${rest.join(' ')}". /duckky list shows them.` }
       const sid = await copyAsSession($, r).catch(() => null)
       if (!sid) return { text: `Found ${r.id.slice(0, 8)}, but not its transcript, so there is no session to open.` }
       return { text: `${r.description} (${r.id.slice(0, 8)}) as a main session. In a terminal in ${r.cwd}:\n  ${openCommand(r)}\nIt is a copy: the subagent itself is not changed.` }
+    }
+    // /duckky sessions [words]: every duckky session copy on this computer
+    if (verb.toLowerCase() === 'sessions') {
+      const dir = `${await configDir($)}/${INDEX_DIR}`
+      const files = (await $.fs.list(dir).catch(() => [])).filter((f) => f.kind === 'file' && f.name.endsWith('.json'))
+      const all = parseEntries(await Promise.all(files.map((f) => $.fs.read(`${dir}/${f.name}`).then((t) => String(t), () => ''))))
+      const shown = rest.length ? matchSessions(all, rest.join(' ')) : all
+      return {
+        text: [
+          ...listing(shown.slice(0, 30)),
+          ...(shown.length === 1 ? ['', `  ${openLine(shown[0])}`] : []),
+          '',
+          'Open one from any terminal: duckky <name or number>, or duckky open <name> --here to work on it in the folder you are in.',
+          'Install the command once: npm install -g github:buggerlogger/duckky-swarm',
+        ].join('\n'),
+      }
     }
     if (verb.toLowerCase() !== 'list') return { text: await openSwarm($) }
     const list = (await known($)).slice(0, 20)

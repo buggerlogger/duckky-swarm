@@ -59,6 +59,7 @@ export const DEFAULT_MESSAGES = {
     open: ' The user can also open it as a main session, in a terminal in {cwd}: {command}',
     withEffort: ', effort {effort}',
     noMatch: 'No subagent matches "{query}". Recent: {recent}',
+    ambiguous: 'Several subagents match "{query}": {list}. Name the one you mean by its id.',
     noneKept: 'none kept',
     noTranscript: 'Found {id}, but not its transcript, so there is nothing to resume from.',
     couldNot: 'Could not resume {id}: {reason}',
@@ -79,6 +80,13 @@ export const DEFAULT_MESSAGES = {
     stopped: '[duckky-swarm] Resumed subagent {from} (now {id}, {label}) was stopped before it finished.{lastWords}',
     refused: '[duckky-swarm] Resumed subagent {from} (now {id}, {label}) stopped on a refusal.{lastWords}',
     ended: '[duckky-swarm] Resumed subagent {from} (now {id}, {label}) ended ({ending}) before it finished.{lastWords}',
+    lastWords: [' Its last words:', '', '{answer}'],
+  },
+  report: {
+    finished: ['[duckky-swarm] Report from subagent {id} ({label}), task "{task}":', '', '{answer}'],
+    noWords: '(it ended without a word)',
+    stopped: '[duckky-swarm] Subagent {id} ({label}) was stopped before it finished its task "{task}".{lastWords}',
+    ended: '[duckky-swarm] Subagent {id} ({label}) ended ({ending}) before it finished its task "{task}".{lastWords}',
     lastWords: [' Its last words:', '', '{answer}'],
   },
   effortTool: {
@@ -184,32 +192,43 @@ const isTemplate = (v: unknown): v is Template =>
 // messages.json's texts over the built-in ones, key by key. `null`: there is
 // no file, so the built-in texts. Returns what the file got wrong, each told
 // plainly; the built-in text stands in for every one of those.
-export function useMessages(json: string | null): string[] {
-  current = DEFAULT_MESSAGES
+// `own`: the person's own messages.json (~/.claude/duckky-swarm/), laid over
+// the plugin's: a plugin update replaces the plugin's folder, never that one.
+export function useMessages(json: string | null, own: string | null = null): string[] {
+  const merged = Object.fromEntries(Object.entries(DEFAULT_MESSAGES).map(([s, t]) => [s, { ...t }])) as Record<string, Record<string, Template>>
+  const problems = [
+    ...layer(merged, json, { name: 'messages.json', prefix: '', fallback: 'built-in', unreadable: 'using the built-in texts' }),
+    ...layer(merged, own, { name: 'your messages.json', prefix: 'your messages.json: ', fallback: "plugin's", unreadable: 'it is ignored' }),
+  ]
+  current = merged as Messages
+  return problems
+}
+
+type Layer = { name: string; prefix: string; fallback: string; unreadable: string }
+
+// One file's texts over `merged`, key by key; what it got wrong, told plainly.
+function layer(merged: Record<string, Record<string, Template>>, json: string | null, l: Layer): string[] {
   if (json === null) return []
   let file: unknown
   try { file = JSON.parse(json) } catch (err) {
-    return [`messages.json is not valid JSON (${(err as Error).message}): using the built-in texts`]
+    return [`${l.name} is not valid JSON (${(err as Error).message}): ${l.unreadable}`]
   }
-  if (!file || typeof file !== 'object' || Array.isArray(file)) return ['messages.json is not an object of sections: using the built-in texts']
+  if (!file || typeof file !== 'object' || Array.isArray(file)) return [`${l.name} is not an object of sections: ${l.unreadable}`]
   const problems: string[] = []
   const given = file as Record<string, unknown>
-  const merged = {} as Record<string, Record<string, Template>>
   for (const [section, texts] of Object.entries(DEFAULT_MESSAGES) as [string, Record<string, Template>][]) {
     const fromFile = given[section] as Record<string, unknown> | undefined
-    merged[section] = { ...texts }
     if (fromFile === undefined) continue
-    if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) { problems.push(`${section} is not an object: its built-in texts are used`); continue }
+    if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) { problems.push(`${l.prefix}${section} is not an object: its ${l.fallback} texts are used`); continue }
     for (const [key, value] of Object.entries(fromFile)) {
       if (key.startsWith('_')) continue
-      if (!(key in texts)) { problems.push(`${section}.${key} is not a text the plugin sends: ignored`); continue }
-      if (!isTemplate(value)) { problems.push(`${section}.${key} must be a string or a list of strings: its built-in text is used`); continue }
+      if (!(key in texts)) { problems.push(`${l.prefix}${section}.${key} is not a text the plugin sends: ignored`); continue }
+      if (!isTemplate(value)) { problems.push(`${l.prefix}${section}.${key} must be a string or a list of strings: its ${l.fallback} text is used`); continue }
       const known = placeholders(texts[key] as Template)
-      for (const name of placeholders(value)) if (!known.has(name)) problems.push(`${section}.${key} uses {${name}}, which it is never given: it stays as written`)
-      merged[section][key] = value
+      for (const name of placeholders(value)) if (!known.has(name)) problems.push(`${l.prefix}${section}.${key} uses {${name}}, which it is never given: it stays as written`)
+      ;(merged[section] as Record<string, Template>)[key] = value
     }
   }
-  for (const section of Object.keys(given)) if (!section.startsWith('_') && !(section in DEFAULT_MESSAGES)) problems.push(`${section} is not a section of messages.json: ignored`)
-  current = merged as Messages
+  for (const section of Object.keys(given)) if (!section.startsWith('_') && !(section in DEFAULT_MESSAGES)) problems.push(`${l.prefix}${section} is not a section of messages.json: ignored`)
   return problems
 }
