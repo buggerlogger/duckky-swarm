@@ -78,11 +78,20 @@ const effortFor = new Map<string, Effort>()    // agent id -> the effort the mai
 const pendingEffort = new Map<string, Effort>()
 const promptKey = (text: string) => `${text.length}:${text.slice(0, 400)}`
 let workspacesOn = true       // the Workspace folders setting
-// Reports in the chat setting: which finished subagents post their report as
-// a message in the person's chat
+// Subagent reports setting: which finished subagents report
 let reports: 'background' | 'all' | 'off' = 'background'
 const reportsFor = (setting: unknown): typeof reports =>
   /every/i.test(String(setting ?? '')) ? 'all' : /off/i.test(String(setting ?? '')) ? 'off' : 'background'
+// Reports go to setting: the person's prompt box (they send it: their own
+// message, which they can rewind to and edit) or straight into the chat.
+// ⛔ Claude Code lets a person rewind only to what a person sent: its rewind
+// list takes a message whose origin is human (Sg: kind "human") and whose
+// turnOrigin is human or sdk, and a plugin's $.prompt.submit is stored
+// origin plugin, promptSource and turnOrigin "system", asUser or not (read
+// in its own code, and in the user's transcript after a rewind failed).
+let reportsTo: 'box' | 'chat' = 'box'
+const reportsToFor = (setting: unknown): typeof reportsTo => (/chat/i.test(String(setting ?? '')) ? 'chat' : 'box')
+const pendingReports: string[] = []   // waiting for the person's prompt box to be empty
 // One file per session copy, in every project, in Claude Code's own folder
 // (INDEX_DIR, bin/sessions.mjs): what /duckky sessions and `duckky` list.
 export type SessionEntry = {
@@ -321,6 +330,35 @@ async function copyAsSession($: EngineInterface, r: AgentRecord): Promise<string
 
 const isDuckky = (r: AgentRecord) => models.some((m) => r.type === `${PLUGIN}:${m.name}` || r.type === `${PLUGIN}:${m.name}-fork`) || !!r.workspace
 
+// A report for the person and Claude: straight into the chat, or (the
+// default) into the person's prompt box, where they read it, edit it if they
+// like, and send it as their own message, one they can rewind to.
+async function deliver($: EngineInterface, report: string) {
+  if (reportsTo === 'chat') { await $.prompt.submit({ text: report }).catch(() => undefined); return }
+  pendingReports.push(report)
+  await fillBox($)
+}
+
+// The waiting reports into the prompt box, together, once it is empty: never
+// over a draft the person is writing (the clock tries again). Where no box is
+// drawn (claude -p) they go into the chat instead.
+async function fillBox($: EngineInterface) {
+  if (!pendingReports.length) return
+  const box = await $.prompt.read().catch(() => null)
+  if (box && box.text.trim()) return
+  const text = pendingReports.join('\n\n---\n\n')
+  const filled = await $.prompt.fill({ text, mode: 'replace' }).catch(() => null)
+  if (filled?.isFilled) {
+    const n = pendingReports.length
+    pendingReports.length = 0
+    $.ui.toast(`${PLUGIN}: ${n === 1 ? 'a subagent report is' : `${n} subagent reports are`} in your prompt box. Edit if you like, then press Enter.`)
+    return
+  }
+  if (filled?.refusal === 'dialog') return   // a dialog holds the keys: later
+  pendingReports.length = 0
+  await $.prompt.submit({ text }).catch(() => undefined)
+}
+
 const workspaceOf = (r: AgentRecord): Workspace | undefined =>
   r.workspace && r.workspaceName && r.workspaceKey ? { folder: r.workspace, name: r.workspaceName, key: r.workspaceKey } : undefined
 
@@ -377,6 +415,8 @@ export const register: Register = (on, options) => {
   keep = options.keepAgents !== false
   workspacesOn = options.workspaces !== false
   reports = reportsFor(options.reports)
+  reportsTo = reportsToFor(options.reportsTo)
+  pendingReports.length = 0
   character = characterFor(options.character)
   live.clear()
 
@@ -386,7 +426,7 @@ export const register: Register = (on, options) => {
     sessionId = await $.session.id().catch(() => '')
     await loadMessages($)   // before anything below sends a text
     $.clock.every(TICK_MS, () => { void animate($) })
-    $.clock.every(1000, () => { void copyAgain($) })
+    $.clock.every(1000, () => { void copyAgain($); void fillBox($) })
     // $.agent.register rejects until the session is bound: after next(e)
     for (const m of models) {
       await addType($, m.name, descriptionFor(m), m)
@@ -598,7 +638,7 @@ export const register: Register = (on, options) => {
           e.reason === 'refusal' ? e.refusal : null,
         )
         briefs.set(r.id, brief)
-        if (r.background) await $.prompt.submit({ text: brief }).catch(() => undefined)
+        if (r.background) await deliver($, brief)
         $.ui.toast(`${PLUGIN}: "${r.description}" stopped on a refusal; the main agent has where it stood and can resume it`)
       }
       restage($)
@@ -619,16 +659,14 @@ export const register: Register = (on, options) => {
       delivering.delete(e.agentId)
       const ending = e.isAborted ? 'aborted' : e.reason === 'answer' ? 'done' : e.reason
       if (ending !== 'refusal' || !r?.background) {
-        await $.prompt.submit({ text: resumedReport({ ...resumed, id: e.agentId, ending, answer: e.answer }) }).catch(() => undefined)
+        await deliver($, resumedReport({ ...resumed, id: e.agentId, ending, answer: e.answer }))
       }
     } else if (r && r.status !== 'refusal' && isDuckky(r) && (reports === 'all' || (reports === 'background' && r.background))) {
-      // Its report as a message in the person's chat: they see it, Claude
-      // reads it, and like any message they can rewind to it and edit it. A
+      // Its report, for the person to see: in their prompt box to send (their
+      // own message, which they can rewind to and edit), or in the chat. A
       // background subagent's answer otherwise reaches the main agent only as
       // a notice the person does not see. (A refusal sent its report above.)
-      await $.prompt.submit({
-        text: subagentReport({ id: r.id, label: r.label, task: r.description, ending: r.status, answer: e.answer, workspace: r.workspace }),
-      }).catch(() => undefined)
+      await deliver($, subagentReport({ id: r.id, label: r.label, task: r.description, ending: r.status, answer: e.answer, workspace: r.workspace }))
     }
     return done
   })

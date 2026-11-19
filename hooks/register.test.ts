@@ -575,38 +575,101 @@ test('a subagent that carries on as a new one keeps its workspace: no second fol
   await call   // its result needs the new agent's id, which a plugin spawn gets only live
 })
 
-// --- reports in the chat ---------------------------------------------------------
+// --- subagent reports ---------------------------------------------------------------
 
-async function reportsAfter($: Engine, on: On, background: boolean, type = 'duckky-swarm:opus-5-5') {
-  engine(on, 'claude-opus-5-5')
+// A session with a prompt box holding `draft`; `canFill` false is a session
+// with no box (claude -p). What went into the box, and what into the chat.
+function box(on: On, draft = '', canFill = true) {
+  const filled: string[] = []
   const submitted: string[] = []
+  const state = { draft }
   on('prompt.submit', (_, e) => (submitted.push(e.text), { text: e.text }))
-  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
-  await $.agent.spawn({ ...spawn(type, 'Compare the trace shapes'), background })
-  await $.turn.complete({ ...(finished('a1b2c3d4e5', 'claude-opus-5-5') as object), answer: 'The shapes differ at bid 277.' } as never)
-  return submitted
+  on('prompt.read', () => ({ value: { text: state.draft, cursor: state.draft.length } as never }))
+  on('prompt.fill', (_, e) => (canFill
+    ? (filled.push(e.text), state.draft = e.text, { isFilled: true, text: e.text, cursor: e.text.length } as never)
+    : ({ isFilled: false, refusal: 'no_composer', text: '', cursor: 0 } as never)))
+  return { filled, submitted, state }
 }
 
-test('a background duckky subagent\'s report is posted in the chat when it finishes, with its workspace', async ($, on) => {
-  const submitted = await reportsAfter($, on, true)
-  expect(submitted.length).toBe(1)
-  expect(submitted[0]).toMatch(/^\[duckky-swarm\] Report from subagent a1b2c3d4 \(Opus 5\.5\), task "Compare the trace shapes":\n\nThe shapes differ at bid 277\. Its workspace: \/w\/duckky-swarm\/claude-opus-5-5-[0-9a-f]{8}-compare-the-trace-shapes\.$/)
+// (the engine's spawn answers every spawn with agent a1b2c3d4e5)
+async function finish($: Engine, background: boolean, type = 'duckky-swarm:opus-5-5', task = 'Compare the trace shapes') {
+  await $.agent.spawn({ ...spawn(type, task), background })
+  await $.turn.complete({ ...(finished('a1b2c3d4e5', 'claude-opus-5-5') as object), answer: `${task}: done.` } as never)
+}
+
+const REPORT = /^\[duckky-swarm\] Report from subagent a1b2c3d4 \(Opus 5\.5\), task "Compare the trace shapes":\n\nCompare the trace shapes: done\. Its workspace: \/w\/duckky-swarm\/claude-opus-5-5-[0-9a-f]{8}-compare-the-trace-shapes\.$/
+
+test('a background subagent\'s report goes into the prompt box: sent from there it is the person\'s own message, which they can rewind to', async ($, on) => {
+  engine(on, 'claude-opus-5-5')
+  const b = box(on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await finish($, true)
+  expect(b.filled.length).toBe(1)
+  expect(b.filled[0]).toMatch(REPORT)
+  expect(b.submitted).toEqual([])   // not posted by the plugin: Claude Code would not let them rewind to that
 })
 
-test('a foreground subagent\'s report is its Agent result, not posted again (by default)', async ($, on) => {
-  expect(await reportsAfter($, on, false)).toEqual([])
+test('a report never goes over a draft the person is typing; it waits, and two waiting reports go in together', async ($, on) => {
+  engine(on, 'claude-opus-5-5')
+  const b = box(on, 'half a sentence I am writ')
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await finish($, true)
+  expect(b.filled).toEqual([])
+  expect(b.state.draft).toBe('half a sentence I am writ')
+  b.state.draft = ''   // they sent it
+  await finish($, true, 'duckky-swarm:opus-5-5', 'map the code')
+  expect(b.filled.length).toBe(1)
+  expect(b.filled[0]).toMatch(/Compare the trace shapes: done\.[\s\S]*\n\n---\n\n\[duckky-swarm\] Report from subagent a1b2c3d4 \(Opus 5\.5\), task "map the code":\n\nmap the code: done\./)
 })
 
-test('Reports in the chat = Every subagent posts a foreground one too', { options: { reports: 'Every subagent' } }, async ($, on) => {
-  expect((await reportsAfter($, on, false)).length).toBe(1)
+test('with no prompt box (claude -p) the report goes into the chat', async ($, on) => {
+  engine(on, 'claude-opus-5-5')
+  const b = box(on, '', false)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await finish($, true)
+  expect(b.submitted.length).toBe(1)
+  expect(b.submitted[0]).toMatch(REPORT)
 })
 
-test('Reports in the chat = Off posts none', { options: { reports: 'Off' } }, async ($, on) => {
-  expect(await reportsAfter($, on, true)).toEqual([])
+test('Reports go to = The chat posts it straight into the chat', { options: { reportsTo: 'The chat' } }, async ($, on) => {
+  engine(on, 'claude-opus-5-5')
+  const b = box(on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await finish($, true)
+  expect(b.filled).toEqual([])
+  expect(b.submitted[0]).toMatch(REPORT)
 })
 
-test('a built-in subagent posts no report and gets no session copy', async ($, on) => {
-  expect(await reportsAfter($, on, true, 'general-purpose')).toEqual([])
+test('a foreground subagent\'s report is its Agent result, not delivered again (by default)', async ($, on) => {
+  engine(on, 'claude-opus-5-5')
+  const b = box(on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await finish($, false)
+  expect([...b.filled, ...b.submitted]).toEqual([])
+})
+
+test('Subagent reports = Every subagent reports a foreground one too', { options: { reports: 'Every subagent' } }, async ($, on) => {
+  engine(on, 'claude-opus-5-5')
+  const b = box(on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await finish($, false)
+  expect(b.filled.length).toBe(1)
+})
+
+test('Subagent reports = Off reports none', { options: { reports: 'Off' } }, async ($, on) => {
+  engine(on, 'claude-opus-5-5')
+  const b = box(on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await finish($, true)
+  expect([...b.filled, ...b.submitted]).toEqual([])
+})
+
+test('a built-in subagent reports nothing', async ($, on) => {
+  engine(on, 'claude-opus-5-5')
+  const b = box(on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await finish($, true, 'general-purpose')
+  expect([...b.filled, ...b.submitted]).toEqual([])
 })
 
 // --- one subagent, never a guess ---------------------------------------------------

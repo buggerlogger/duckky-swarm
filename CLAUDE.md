@@ -164,14 +164,24 @@ names. `.claude-plugin/plugin.json` (with the `/config` settings under
   where missing. Proved live: the subagent kept all five notes and put its
   test script in temp/, src/ untouched, and `claude --resume <folder name>`
   opened it. Setting: `workspaces` (on).
-- Reports in the chat (`reports`: background by default, every, off): at a
-  duckky subagent's `turn.complete` its report (`subagentReport`, messages
-  `report`) goes to `$.prompt.submit`, a real user message the person sees,
-  Claude reads, and the person can rewind and edit (proved live: isMeta
-  false, "The duckky-swarm plugin sent a message: [duckky-swarm] Report
-  from subagent..."). Claude Code still sends its own hidden task notice, so
-  Claude gets it twice; it handled that fine live. Not on a refusal (the
-  refusal report went already), not for built-in subagents.
+- Subagent reports (`reports`: background by default, every, off) and where
+  they go (`reportsTo`: the prompt box by default, or the chat): at a duckky
+  subagent's `turn.complete` its report (`subagentReport`, messages
+  `report`), the refusal report and a resumed answer all go through
+  `deliver()`. ⛔⛔ A plugin's `$.prompt.submit` CANNOT be rewound to: Claude
+  Code stores it origin {kind:"plugin"}, promptSource and turnOrigin
+  "system" (asUser changes only the frame), and its rewind list takes only
+  a message with origin human (`Sg`: kind "human") and turnOrigin human or
+  sdk (read in claude.exe's bundle after the user's rewind failed). So by
+  default the report goes into the prompt box with `$.prompt.fill`: the
+  person sends it, and it is their own typed message. It never goes over a
+  draft (`$.prompt.read` non-empty: it waits in `pendingReports`, retried by
+  the 1 s clock), waiting ones go in together joined by `---`, and with no
+  box (`no_composer`, claude -p) it falls back to submit (proved live). Not
+  proved interactively here (that needs a window, and a window steals the
+  user's keyboard): the person's own test is the proof. Claude Code still
+  sends its own hidden task notice. Not on a refusal (the refusal report
+  went already), not for built-in subagents.
 - The session index: `copyAsSession` also writes
   `<config>/duckky-swarm/sessions/<sid>.json` (one file per copy, so two
   sessions never race), even when it leaves a diverged copy alone.

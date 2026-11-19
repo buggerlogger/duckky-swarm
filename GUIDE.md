@@ -23,7 +23,8 @@ Open `/config` after install. The defaults are already filled in. Claude Code ma
 | Keep subagents across sessions | on | The store keeps model, task, and transcript so a later session can resume. |
 | Character | Clawd | Clawd or Duckky Ducks, above the prompt and in `/duckky`. |
 | Workspace folders | on | A folder per duckky subagent in the project, `duckky-swarm/<model>-<id>-<task>/`. See Workspaces. |
-| Reports in the chat | Background subagents | A finished subagent's report posted in your chat as a message. `Every subagent` adds foreground ones, whose result is otherwise the Agent tool's output. `Off` posts none. |
+| Subagent reports | Background subagents | Which finished subagents report. `Every subagent` adds foreground ones, whose result is otherwise the Agent tool's output. `Off` reports none. |
+| Reports go to | Your prompt box | Where a report lands: your prompt box (you send it, so you can rewind to it), or the chat (Claude reads it at once, but you can't rewind to it). |
 
 The shipped default list is long: Fable, Opus, Sonnet, and Haiku ids from 4.5 upward. Each type is added to the session prompt. Delete the ones you do not use.
 
@@ -97,9 +98,15 @@ Claude Code finds a session by the folder it runs in, so `duckky` changes to the
 
 To type `claude --duckky` instead, run `duckky shell` once. A plugin can't add an option to `claude`, so this adds a small shell function named `claude` to your PowerShell profile (and to `.bashrc` / `.zshrc` if you have one). It sends `claude --duckky ...` to `duckky ...` and every other call to the real `claude`, unchanged. Open a new terminal afterwards. `duckky shell --remove` takes it out.
 
-## Reports in the chat
+## Subagent reports
 
-When a duckky subagent finishes in the background, its report is posted in your chat as a message from the plugin: its answer, then its workspace. Claude reads it, and you can rewind to it and edit it like any message. Claude Code also sends Claude its own notice of the same finish, which you don't see, so Claude gets the result twice. Set Reports in the chat in `/config` to change which subagents report.
+When a duckky subagent finishes in the background, its report (its answer, then its workspace) lands in your prompt box. Read it, edit it if you like, and press Enter. It is then your own message, so Claude reads it and you can rewind to it and edit it later.
+
+It doesn't go straight into the chat because Claude Code only lets you rewind to messages a person sent. Anything a plugin posts is stored as a system message, and rewind skips it.
+
+If you're typing when a report arrives, it waits until your box is empty. Reports that wait together go in together, separated by `---`. With no prompt box (`claude -p`), the report goes into the chat.
+
+Set Reports go to = The chat to have Claude read reports at once instead, without being able to rewind to them. Claude Code also sends Claude its own notice when a background subagent finishes, which you don't see. Subagent reports chooses which subagents report.
 
 ## Effort after spawn
 

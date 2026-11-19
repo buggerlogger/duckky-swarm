@@ -1,6 +1,6 @@
 {
   "name": "duckky-swarm",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "Subagents on the exact model you name (Opus 4.6, Opus 5, ...), with proof of the model they ran on, forks, and resume across sessions.",
   "author": {
     "name": "buggerlogger",
@@ -44,10 +44,17 @@
     },
     "reports": {
       "type": "string",
-      "title": "Reports in the chat",
-      "description": "When a duckky subagent finishes, its report is posted in your chat as a message: you see it, Claude reads it, and you can rewind to it and edit it. A background subagent's answer otherwise reaches Claude only as a notice you don't see.",
+      "title": "Subagent reports",
+      "description": "Which finished duckky subagents report to you. A background subagent's answer otherwise reaches Claude only as a notice you don't see.",
       "options": ["Background subagents (recommended)", "Every subagent", "Off"],
       "default": "Background subagents (recommended)"
+    },
+    "reportsTo": {
+      "type": "string",
+      "title": "Reports go to",
+      "description": "Your prompt box: the report waits there (never over a draft you're typing); edit it if you like and press Enter, and it is your own message, which you can rewind to and edit. The chat: Claude reads it at once, but Claude Code only lets you rewind to messages you sent, so you can't rewind to it.",
+      "options": ["Your prompt box (recommended)", "The chat"],
+      "default": "Your prompt box (recommended)"
     }
   }
 }
