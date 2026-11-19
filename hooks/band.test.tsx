@@ -113,3 +113,21 @@ test('with no subagents the band is left as it was', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /^Opus/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('once its first request is out a subagent thinks on the band, not "starting"', async ($, on) => {
+  engine(on)
+  on('turn.step', async function* (_, e) {
+    yield { kind: 'stop', stopReason: 'end_turn', usage: null } as const
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null } as const
+  })
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn(spawn('duckky-swarm:opus-4-6'))
+  let ui = await $.ui.mount(BAND)
+  expect((await ui.find({ type: 'Text', text: /^starting$/ }))?.text).toBe('starting')
+  await ui.unmount()
+  const s = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-4-6', messageCount: 2, agentId: 'a1b2c3d4e5' })
+  for (;;) if ((await s.next()).done) break
+  ui = await $.ui.mount(BAND)
+  expect((await ui.find({ type: 'Text', text: /^thinking$/ }))?.text).toBe('thinking')
+  await ui.unmount()
+})

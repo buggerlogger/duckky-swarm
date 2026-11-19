@@ -45,6 +45,8 @@ export type AgentRecord = {
   background?: boolean
   /** The effort its model requests were last sent with (how hard it thinks). */
   effort?: string | number
+  /** Its copy as a main session, for `claude --resume <id>` (session-copy.ts). */
+  sessionCopy?: string
 }
 
 const PREFIX = 'agent:'

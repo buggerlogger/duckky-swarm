@@ -22,7 +22,6 @@ Open `/config` after install. The defaults are already filled in. Claude Code ma
 | Fork on another model | `context` | `context` starts a subagent on the named model and gives it a copy of the conversation. `true` is a real fork, which stays on the parent model. |
 | Keep subagents across sessions | on | The store keeps model, task, and transcript so a later session can resume. |
 | Character | Clawd | Clawd or Duckky Ducks, above the prompt and in `/duckky`. |
-| Refusal retries | 3 | Same request, from the message before the refusal, up to this many times. `0` turns it off. |
 
 The shipped default list is long: Fable, Opus, Sonnet, and Haiku ids from 4.5 upward. Each type is added to the session prompt. Delete the ones you do not use.
 
@@ -30,9 +29,27 @@ Not every model accepts every effort. Opus 4.5 takes `low`, `medium`, `high`. Op
 
 ## Resume
 
-"Resume subagent ac82d396" or words from its task. `resume_subagent` rewinds to the last message before a refusal when that is how the turn ended.
+"Resume subagent ac82d396" or words from its task.
 
-The call returns right away and the resumed subagent runs in the background. When it ends, its answer reaches the main agent as a message from the plugin. A hook gets 10 seconds of its own time, and a resume can run for minutes, so the tool can't wait for the answer. Under `claude -p` a background subagent ends with the main turn.
+A subagent of this session is resumed itself. Claude Code continues the same agent, with the same id, transcript, and list entry, the way your own resume from its transcript view does. Claude Code tells the main agent when it finishes.
+
+A subagent from an earlier session, or one Claude Code won't resume (one you stopped), carries on as a new subagent that gets its transcript. That one rewinds to the last message before a refusal if that is how it ended, and its answer reaches the main agent as a message from the plugin.
+
+Either way the subagent runs on the model it was started for. If a refusal moved its replies to a fallback model, the resume goes back to the model you chose.
+
+The call returns right away. A hook gets 10 seconds of its own time, and a resume can run for minutes, so the tool can't wait for the answer. Under `claude -p` a background subagent ends with the main turn.
+
+## Open a subagent as a normal session
+
+Every subagent is also saved as a session of its own when it stops. `/duckky list` shows each one's line, and `/duckky open <id>` writes it on the spot for any subagent, older ones included:
+
+```
+claude --resume 711d1ae8-8bb6-43d4-901a-b67924e648e0 --model claude-opus-5
+```
+
+Run it in a terminal in the same folder. You get that subagent's whole conversation and a normal prompt, and you work with it as your main agent.
+
+It is a copy. The subagent in the first session doesn't change. Once you've typed in the copy, the plugin stops rewriting it, so your work there is kept. Each copy is a full transcript, and they show in `/resume` titled `duckky-swarm: <task>`.
 
 If Keep subagents is off, or the store was cleared, the plugin looks in Claude Code's own files for this project: `projects/<cwd>/<session>/subagents/agent-<id>.meta.json` and the matching `.jsonl`.
 
@@ -46,11 +63,11 @@ The window reads `"effort"` off each reply in the transcript.
 
 ## Refusals
 
-A `stopReason` of `refusal` is dropped. The same request is sent again, unchanged, up to Refusal retries. A retry that gets through continues from the message before the refusal. The refused text is not kept.
+Claude Code handles a refusal itself, under the plugin. It withholds the refused reply and asks again with a note not to repeat it. If the model refuses again, it can move the subagent to another model. In one live run an Opus 5 fork was answered by Opus 4.8. The `/duckky list` line and a toast show the model that really answered.
 
-After the last retry the subagent stops. The parent gets a report: last message before the refusal, last tool result, the refused text, and the API reason. It can `resume_subagent` with a clearer task, or tell you to stop. `SendMessage` to a refused subagent is pointed at `resume_subagent`, because a normal message would carry the refused reply forward.
+A subagent's reply streams to its view as it comes. Up to 0.3.2 the plugin held each reply until it ended so it could ask again, and the chat stayed empty while a reply ran. That retry never ran, because Claude Code had already dealt with the refusal, so it is gone, along with the Refusal retries setting.
 
-This covers a refusal that was a glitch. It does not rephrase the request to get past a real one.
+If the subagent's turn still ends on a refusal, it stops. The parent gets a report: last message before the refusal, last tool result, the refused text, and the API reason. It can `resume_subagent` with a clearer task, or tell you to stop. `SendMessage` to a refused subagent is pointed at `resume_subagent`, because a normal message would carry the refused reply forward.
 
 ## The window and the band
 
@@ -84,7 +101,7 @@ The character follows the tool the subagent is in.
 | a smaller character beside it | it started its own subagent |
 | jump | finished |
 | night cap | stopped |
-| red no-entry sign | refused after the last retry |
+| red no-entry sign | its turn ended on a refusal |
 
 ```
 node viewer/duckky-view.mjs --gallery

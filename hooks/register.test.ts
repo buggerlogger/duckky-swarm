@@ -1,6 +1,7 @@
 import type { AgentSpawnInput, CommandRunInput, On } from 'claude-code'
 import { expect, test, type Engine } from 'claude-code/testing'
 import { effortsFor, labelFor, parseModels } from './models.ts'
+import { asSession, sessionIdFor } from './session-copy.ts'
 
 // the test environment has a timer at run time; its types do not declare one
 declare function setTimeout(run: () => void, ms: number): unknown
@@ -255,17 +256,14 @@ test('background: the refusal report is sent into the main chat', async ($, on) 
   expect(submitted.join('\n')).toContain('Refusal report: subagent a1b2c3d4')
 })
 
-test('SendMessage to a refused subagent is pointed to resume_subagent; to anyone else it goes on', async ($, on) => {
+test('SendMessage reaches any subagent, a refused one too: Claude Code withholds a refused reply itself', async ($, on) => {
   engine(on, 'claude-opus-4-6', { [TRANSCRIPT]: REFUSED })
   on('tool.call', () => ({ result: 'sent' }))
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
   await $.agent.spawn(spawn('duckky-swarm:opus-4-6', 'reverse obf.js'))
   await $.turn.complete(refusedTurn('a1b2c3d4e5'))
-
-  const blocked = await $.tool.call({ tool: 'SendMessage', to: 'a1b2c3d4', message: 'go on' } as never) as { deny?: string; isError?: boolean; result?: unknown }
-  expect(String(blocked.deny ?? blocked.result)).toContain('resume_subagent')
-  const other = await $.tool.call({ tool: 'SendMessage', to: 'zz991122', message: 'hi' } as never) as { result?: unknown }
-  expect(other.result).toBe('sent')
+  const sent = await $.tool.call({ tool: 'SendMessage', to: 'a1b2c3d4', message: 'go on' } as never) as { result?: unknown }
+  expect(sent.result).toBe('sent')
 })
 
 test('resume_subagent after a refusal rewinds to the last message before it', async ($, on) => {
@@ -437,4 +435,60 @@ test('a broken messages.json says so in a toast, and the built-in texts are sent
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
   expect(toasts.join('\n')).toMatch(/duckky-swarm: messages\.json: messages\.json is not valid JSON/)
   expect(registered.find((r) => r.name === 'opus-4-6-fork')?.description).toContain('A FORK on Opus 4.6')
+})
+
+// --- the same subagent, and a subagent as a main session ---------------------
+
+test('resume_subagent resumes a subagent of this session ITSELF, through Claude Code: no new subagent', async ($, on) => {
+  const { spawned } = engine(on, 'claude-opus-5', { [TRANSCRIPT]: REFUSED })
+  const sends: { to: string; text: string }[] = []
+  on('session.send', (_, e) => (sends.push({ to: JSON.stringify(e.to), text: e.text }), { isDelivered: true } as never))
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn(spawn('duckky-swarm:opus-5-fork', 'close the gap'))
+  await $.turn.complete(finished('a1b2c3d4e5', 'claude-opus-5'))
+  const r = await $.tool.call({ tool: 'mcp__duckky-swarm__resume_subagent', agent: 'a1b2c3d4', message: 'next task: bid 277' } as never) as { result?: unknown }
+  expect(sends).toEqual([{ to: expect.stringContaining('a1b2c3d4e5'), text: 'next task: bid 277' }])
+  expect(spawned.length).toBe(1)   // only the original: nothing new started
+  expect(String(r.result)).toContain('Resumed a1b2c3d4 itself on claude-opus-5')
+})
+
+test('one Claude Code will not resume itself carries on as a new subagent, on the model it was STARTED for, not a fallback', async ($, on) => {
+  const { spawned } = engine(on, 'claude-opus-5', { [TRANSCRIPT]: REFUSED })
+  on('session.send', () => ({ isDelivered: false, reason: 'it was stopped by the user and won\'t be resumed' } as never))
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn(spawn('duckky-swarm:opus-5', 'close the gap'))
+  await $.turn.complete(finished('a1b2c3d4e5', 'claude-opus-4-8'))   // a refusal moved its reply to Opus 4.8
+  const call = $.tool.call({ tool: 'mcp__duckky-swarm__resume_subagent', agent: 'a1b2c3d4', message: 'go on' } as never)
+  for (let i = 0; i < 200 && spawned.length < 2; i++) await new Promise<void>((resolve) => setTimeout(resolve, 5))
+  expect(spawned[1]?.subagentType).toBe('duckky-swarm:opus-5')   // the model chosen, not the one that last answered
+  expect(String(((await call) as { result?: unknown }).result)).toContain('would not resume a1b2c3d4 itself (it was stopped by the user')
+})
+
+test('a subagent that stops is saved as a session claude --resume opens; /duckky list and /duckky open show the command', async ($, on) => {
+  const { store } = engine(on, 'claude-opus-4-6', { [TRANSCRIPT]: REFUSED })
+  const writes = new Map<string, string>()
+  on('fs.write', (_, e) => (writes.set(e.path.split(String.fromCharCode(92)).join('/'), e.text), { value: undefined }))
+  on('classic.SubagentStop', () => ({}))
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn(spawn('duckky-swarm:opus-4-6', 'reverse obf.js'))
+  await $.classic.SubagentStop({ stop_hook_active: false, agent_id: 'a1b2c3d4e5', agent_transcript_path: TRANSCRIPT, agent_type: 'duckky-swarm:opus-4-6' } as never)
+  const sid = (store.get('agent:a1b2c3d4e5') as { sessionCopy?: string } | undefined)?.sessionCopy ?? ''
+  expect(sid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  const copy = writes.get(`C:/Users/t/.claude/projects/-w/${sid}.jsonl`) ?? ''
+  expect(copy.trim().split('\n').map((l) => JSON.parse(l).sessionId).every((s) => s === sid)).toBe(true)
+  expect((await $.command.run(duckky('list'))).text).toContain(`as a main session: claude --resume ${sid} --model claude-opus-4-6`)
+  expect((await $.command.run(duckky('open a1b2c3d4'))).text).toContain(`claude --resume ${sid} --model claude-opus-4-6`)
+})
+
+test('a copy the person has worked in as a session is never written over', async ($, on) => {
+  const sid = sessionIdFor('a1b2c3d4e5')
+  const theirs = `${asSession(REFUSED, sid, 't')}${JSON.stringify({ type: 'user', uuid: 'theirs-1', sessionId: sid, message: { content: 'their own work' } })}\n`
+  engine(on, 'claude-opus-4-6', { [TRANSCRIPT]: REFUSED, [`C:/Users/t/.claude/projects/-w/${sid}.jsonl`]: theirs })
+  const writes: string[] = []
+  on('fs.write', (_, e) => (writes.push(e.path), { value: undefined }))
+  on('classic.SubagentStop', () => ({}))
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn(spawn('duckky-swarm:opus-4-6', 'reverse obf.js'))
+  await $.classic.SubagentStop({ stop_hook_active: false, agent_id: 'a1b2c3d4e5', agent_transcript_path: TRANSCRIPT, agent_type: 'duckky-swarm:opus-4-6' } as never)
+  expect(writes).toEqual([])
 })

@@ -82,7 +82,7 @@ test('the refusal report: where it stood, in full, and how to go on honestly', (
   expect(s.refused).toBe('REFUSED-TEXT')
   const brief = refusalBrief({ id: 'a7b46044ddf67ae57', label: 'Opus 4.6', model: 'claude-opus-4-6', description: 'reverse obf.js', refusals: 4 }, s, { category: 'cyber', explanation: null })
   expect(brief).toContain('Refusal report: subagent a7b46044 (Opus 4.6, claude-opus-4-6)')
-  expect(brief).toContain('(4 times, retries included)')
+  expect(brief).toContain('(4 times)')
   expect(brief).toContain("The API's reason: cyber")
   expect(brief).toContain('It loops 3 times; now the arithmetic.')
   expect(brief).toContain('resume_subagent with agent "a7b46044"')

@@ -72,16 +72,20 @@ names. `.claude-plugin/plugin.json` (with the `/config` settings under
   band is the nearest place.
 - A plain `tool.call` hook (no matcher) watches every call for a subagent's
   `agentId` to set its activity; it never changes the call.
-- Refusal retries: a `turn.step` hook on SUBAGENT steps (`e.agentId`) holds
-  each response until it ends; a `stopReason` of `refusal` is dropped (never
-  yielded, so never shown or recorded: what leaves the outermost hook is what
-  the engine keeps) and `next(e)` is called again. MEASURED in the test kit:
-  a second `next(e)` in a step hook really sends the request again (the fake
-  model counted 3 requests), it does not replay. The budget is per subagent
-  (`refusalsOf`), across its run; past it the refusal goes through. The
-  request's messages are pinned, so nothing can be added: it is asked again
-  unchanged, by design. Not tested against a live refusal (that would mean
-  sending something meant to be refused).
+- ⛔⛔ The `turn.step` hook on SUBAGENT steps (`e.agentId`) STREAMS every
+  chunk straight through (`yield* next(ask)`); it applies effort, flips the
+  band from starting to thinking, and counts a refusal it sees. Never hold a
+  reply back: what the agent's view shows is what leaves the hooks, live.
+  Up to 0.3.2 it held each reply until it ended, to ask again unchanged on a
+  refusal: the agent's view stayed EMPTY while a reply ran (the user saw no
+  chat for 50 s), and live the retry never ran, because Claude Code handles
+  a classifier refusal BENEATH plugin hooks: it withholds the reply, adds an
+  isMeta note ("stopped by a safety classifier... do not produce that content
+  again"), asks again, and can fall back to another model (an opus-5 fork's
+  third request went to claude-opus-4-8, which answered). So the Refusal
+  retries setting is gone. `refusal.test.ts` proves the first chunk is out
+  before the model finishes; the old holding hook times out on it (control
+  run).
 - The refusal report (`hooks/brief.ts`, `refusalScene` in history.ts): when a
   subagent's turn ends on a refusal, its transcript gives its last message
   before the refusal, the last tool result and the refused text. The report
@@ -120,6 +124,27 @@ names. `.claude-plugin/plugin.json` (with the `/config` settings under
   `projects/<cwd>/<session>/subagents/agent-<id>.meta.json` + `.jsonl` for
   THIS cwd, by id prefix or by words from the meta's `description`. Proved
   live with a subagent the store had never seen.
+- ⛔⛔ `resume_subagent` resumes a subagent of THIS session ITSELF with
+  `$.session.send({ to: { agentId }, text })` (Claude Code's own resume: same
+  id, transcript, list entry; Claude Code notifies the main agent). The user
+  asked for this after a resume made a NEW agent in its place.
+  "Of this session" = the record's `sessionId`, NOT `$.agent.list()`: the
+  engine drops a finished subagent from that list soon after, exactly when
+  it is resumed (measured live: a new agent was made). Only when the send is
+  refused (one the person stopped) or the agent is from an earlier session
+  does it spawn a new subagent given the transcript. Proved live: one
+  transcript file, "KIWI-9" answered by the same agent.
+- A resume runs on `startedModel(r)` (the duckky type's model), never
+  `answeredBy`: Claude Code's refusal fallback can answer an opus-5 fork with
+  opus-4-8, and resuming there left the model the user chose.
+- `hooks/session-copy.ts`: every subagent is also written as a main session
+  (`projects/<cwd>/<sessionIdFor(agentId)>.jsonl`: its user/assistant/
+  attachment/system records, `isSidechain:false`, no `agentId`, first
+  `parentUuid:null`, an `ai-title`) at SubagentStop and again 3 s later
+  (Claude Code writes the last reply just AFTER the stop: the first copy
+  lacked it, measured), and by `/duckky open <id>`. `claude --resume <id>`
+  opens it as the main agent (proved live with -p). A copy holding a uuid the
+  subagent never had (the person typed in it) is never written over.
 - In the test kit `$.turn.step(...)` has no `.result`: read the generator's
   return value (`{ done: true, value }`). The plugin's own `next(e)` streams
   do have `.result`.

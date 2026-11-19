@@ -19,11 +19,12 @@
 // resume_subagent tool continues one, from this session or an earlier one, on
 // the same model with its old transcript.
 
-import type { EngineInterface, Register, RenderElement, TurnStepChunk } from 'claude-code'
+import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import { characterFor } from '../characters/index.mjs'
 import { activityOf, shownActivity } from '../viewer/model.mjs'
 import { bandTree, rasterKey, stagesFor, type BandAgent } from './band.tsx'
 import { hookFailed, refusalBrief, resumedReport } from './brief.ts'
+import { asSession, diverged, resumeCommand, sessionIdFor } from './session-copy.ts'
 import { text, useMessages } from './messages.ts'
 import { newestWithin, parseTranscript, refusalAt, refusalScene, sessionLines, transcriptLines } from './history.ts'
 import { launchArgv, subagentsDir } from './launcher.ts'
@@ -66,9 +67,7 @@ let cwd = ''
 let tick = 0                  // the band's animation frame
 let bandId: string | null = null   // the band's requestId while it shows stages
 let drawn = ''                // the band's stages as last laid out: a change re-lays it
-let retries = 3               // asks again per subagent when its model refuses
 let character = characterFor('Clawd')   // who acts out the work: the Character setting
-const refusalsOf = new Map<string, number>()   // agent id -> refusals asked again so far
 const byToolUse = new Map<string, string>()    // the Agent call's tool_use_id -> the agent it started
 const briefs = new Map<string, string>()       // refused agent id -> its refusal report, until delivered
 const effortFor = new Map<string, Effort>()    // agent id -> the effort the main agent set for it
@@ -215,7 +214,12 @@ async function findOnDisk($: EngineInterface, query: string): Promise<AgentRecor
   const id = idOf(hit.name)
   const transcript = `${hit.dir}/agent-${id}.jsonl`
   const jsonl = String(await $.fs.read(transcript).catch(() => ''))
-  const model = [...jsonl.matchAll(/"model":"(claude-[^"]+)"/g)].pop()?.[1] ?? ''
+  // the model it started on: its first reply's. Not the last "model" in the
+  // file: a refusal can move replies to a fallback model, and Claude Code's
+  // request records name other models too (its advisor).
+  const firstReply = jsonl.split('\n').map((l) => { try { return JSON.parse(l) } catch { return null } })
+    .find((x) => x?.type === 'assistant' && typeof x.message?.model === 'string')
+  const model: string = firstReply?.message.model ?? ''
   return {
     id, type: meta.agentType ?? 'general-purpose', label: model ? labelFor(model) : 'subagent', model, requested: null,
     answeredBy: model || null, description: meta.description ?? '', fork: !!meta.isFork, sessionId: hit.session, cwd,
@@ -244,6 +248,49 @@ async function forkPrompt($: EngineInterface, m: ModelEntry, task: string): Prom
   return text('fork', 'prompt', { label: m.label, id: m.id, conversation: history, task })
 }
 
+// The model a subagent was started for: its duckky type's, else what it was
+// asked for or resolved to. Never the model that last answered: a refusal can
+// move a reply to a fallback model (an opus-5 fork was answered by opus-4-8),
+// and a resume there would leave the model the person chose.
+function startedModel(r: AgentRecord): string {
+  const t = models.find((m) => r.type === `${PLUGIN}:${m.name}` || r.type === `${PLUGIN}:${m.name}-fork`)
+  return t?.id ?? r.requested ?? r.model
+}
+
+// The subagent's transcript as a session `claude --resume` opens, beside the
+// project's own sessions (session-copy.ts). Written again each time it stops,
+// unless the person has worked in the copy: then the copy is theirs.
+async function copyAsSession($: EngineInterface, r: AgentRecord): Promise<string | null> {
+  const jsonl = await readTranscript($, r)
+  if (!jsonl || !r.cwd) return null
+  const sid = sessionIdFor(r.id)
+  const path = `${await configDir($)}/projects/${r.cwd.replace(/[^A-Za-z0-9]/g, '-')}/${sid}.jsonl`
+  const before = await $.fs.read(path).then((t) => String(t), () => null)
+  if (before === null || !diverged(before, jsonl)) await $.fs.write(path, asSession(jsonl, sid, `${PLUGIN}: ${r.description}`))
+  if (r.sessionCopy !== sid) { r.sessionCopy = sid; await write($, r) }
+  return sid
+}
+
+// A stopped subagent's copy, written again a moment later: Claude Code puts
+// its last reply in the transcript just AFTER its stop (measured live: a copy
+// made at the stop held the question and not the answer, so the session that
+// opened it said it had not replied). Driven by the clock from session.start.
+const copyDue = new Map<string, number>()   // agent id -> when to write its copy again
+const COPY_AGAIN_MS = 3000
+async function copyAgain($: EngineInterface) {
+  const now = Date.now()
+  for (const [id, at] of copyDue) {
+    if (at > now) continue
+    copyDue.delete(id)
+    const r = live.get(id)
+    if (r) await copyAsSession($, r).catch(() => null)
+  }
+}
+
+// What opens the subagent as a main session, for the person or the main agent.
+const openCommand = (r: AgentRecord) => (r.sessionCopy ? resumeCommand(r.sessionCopy, startedModel(r)) : '')
+const openText = (r: AgentRecord) => (r.sessionCopy ? text('resumeTool', 'open', { cwd: r.cwd, command: openCommand(r) }) : '')
+
 // The texts sent to Claude, from messages.json at the plugin's root: the
 // built-in ones where it has none, and each mistake in it told once.
 async function loadMessages($: EngineInterface) {
@@ -258,9 +305,7 @@ export const register: Register = (on, options) => {
   models = parsed.models
   const contextForks = options.forkMode !== 'true'
   keep = options.keepAgents !== false
-  retries = Math.max(0, Math.floor(Number(options.refusalRetries ?? 3)) || 0)
   character = characterFor(options.character)
-  refusalsOf.clear()
   live.clear()
 
   on('session.start', async ($, e, next) => {
@@ -269,6 +314,7 @@ export const register: Register = (on, options) => {
     sessionId = await $.session.id().catch(() => '')
     await loadMessages($)   // before anything below sends a text
     $.clock.every(TICK_MS, () => { void animate($) })
+    $.clock.every(1000, () => { void copyAgain($) })
     // $.agent.register rejects until the session is bound: after next(e)
     for (const m of models) {
       await addType($, m.name, descriptionFor(m), m)
@@ -305,7 +351,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'duckky',
       description: 'Duckky Swarm: open the live window of this session\'s subagents (list: the model each really ran on)',
-      argumentHint: '[list]',
+      argumentHint: '[list | open <id>]',
     })
     if (keep) {
       const kept = await allAgents($)
@@ -391,15 +437,16 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Each model request of a subagent. Its effort: the one the main agent set
-  // for it (set_subagent_effort, or a resume's), applied here, and recorded as
-  // it was sent. Then refusals: ask the same request again from just before
-  // the refused response, up to `retries` times for that subagent, then let
-  // the refusal through so the subagent stops as refused. Each response is
-  // held until it ends, so a refused one is never shown or recorded: what
-  // leaves this hook is what the engine keeps. The request's messages are the
-  // engine's own and pinned: it is asked again unchanged, nothing added to
-  // talk the model round. The main loop's steps pass straight by.
+  // Each model request of a subagent: its effort, the one the main agent set
+  // for it (set_subagent_effort, or a resume's), applied here and recorded as
+  // sent. The reply streams straight through, so the agent's view shows it as
+  // it comes; the main loop's steps pass by untouched.
+  // ⛔ Never hold a reply back. This hook used to hold every reply until it
+  // ended, to ask again unchanged when it was refused: the agent's view then
+  // showed nothing while a reply ran (50 s live, "not showing the chat"), and
+  // the retry never even ran, as Claude Code handles a classifier refusal
+  // BENEATH this hook (it withholds the reply, asks again with a note, and
+  // can fall back to another model: an opus-5 fork was answered by opus-4-8).
   on('turn.step', async function* ($, e, next) {
     const agentId = e.agentId
     if (!agentId) return yield* next(e)
@@ -409,22 +456,10 @@ export const register: Register = (on, options) => {
     const ask = want === undefined || e.effort === undefined ? e : { ...e, effort: want }
     const r0 = live.get(agentId)
     if (r0 && ask.effort !== undefined && r0.effort !== ask.effort) { r0.effort = ask.effort; restage($) }
-    if (retries <= 0) return yield* next(ask)
-    for (;;) {
-      const stream = next(ask)
-      const held: TurnStepChunk[] = []
-      for await (const c of stream) held.push(c)
-      const result = await stream.result
-      const used = refusalsOf.get(agentId) ?? 0
-      if (result.stopReason === 'refusal') noteRefusal($, agentId, used + 1)
-      if (result.stopReason !== 'refusal' || used >= retries) {
-        for (const c of held) yield c
-        return result
-      }
-      refusalsOf.set(agentId, used + 1)
-      const r = live.get(agentId)
-      $.ui.toast(`${PLUGIN}: ${r ? `"${r.description}"` : 'a subagent'} was refused; asking again (${used + 1}/${retries})`)
-    }
+    if (r0?.activity === 'starting') setActivity($, r0, 'thinking')   // its first request is out: it thinks
+    const result = yield* next(ask)
+    if (result?.stopReason === 'refusal') noteRefusal($, agentId, (r0?.refusals ?? 0) + 1)
+    return result
   }).catch(async function* ($, e, next) { return yield* next(e) })
 
   // The main agent's Agent call: when the subagent it waited on stopped on a
@@ -438,21 +473,16 @@ export const register: Register = (on, options) => {
     return { ...out, context: [...(out.context ?? []), brief] }
   }).catch(($, e, next) => next(e))
 
-  // SendMessage would wake a refused subagent with its refused reply still in
-  // its context; resume_subagent rewinds it to just before. Point to that.
-  on('tool.call', { tool: 'SendMessage' }, async ($, e, next) => {
-    const to = String((e as unknown as { to?: unknown }).to ?? '').toLowerCase()
-    const r = to.length >= 4 ? [...live.values()].find((x) => x.status === 'refusal' && x.id.toLowerCase().startsWith(to)) : undefined
-    if (!r) return next(e)
-    return { deny: text('sendMessage', 'refused', { id: r.id.slice(0, 8) }) }
-  }).catch(($, e, next) => (next.called ? next(e) : next(e)))
-
   on('classic.SubagentStop', async ($, e, next) => {
     const r = live.get(e.agent_id)
     if (r) {
       r.transcript = e.agent_transcript_path
       if (e.last_assistant_message) r.lastAnswer = e.last_assistant_message.slice(0, 4000)
       await write($, r)
+      // its transcript as it stands, openable as a main session; again once
+      // its last reply has landed
+      await copyAsSession($, r).catch(() => null)
+      copyDue.set(r.id, Date.now() + COPY_AGAIN_MS)
     }
     return next(e)
   }).catch(($, e, next) => next(e))   // SubagentStop can block a stop: a failure here must not
@@ -519,6 +549,38 @@ export const register: Register = (on, options) => {
       const recent = rows.slice(0, 5).map((x) => `${x.id.slice(0, 8)} ${x.label}: ${x.description}`).join('; ')
       return { result: text('resumeTool', 'noMatch', { query: String(agent), recent: recent || text('resumeTool', 'noneKept') }), isError: true }
     }
+    const model = startedModel(r)
+    if (effort !== undefined && model && !effortFits(model, effort)) {
+      return { result: text('resumeTool', 'effortDoesNotFit', { effort, id: r.id.slice(0, 8), fits: effortsText(model) }), isError: true }
+    }
+    const withEffort = effort === undefined ? '' : text('resumeTool', 'withEffort', { effort })
+    const say = String(message ?? text('resumePrompt', 'defaultMessage'))
+
+    // A subagent of this session is resumed ITSELF, by Claude Code, as the
+    // person's own resume from its transcript view does: the same id and list
+    // entry, its own transcript, its own model. The user asked for exactly
+    // this after a resume made a NEW agent in its place. Claude Code
+    // tells the main agent when it finishes. One it will not resume (one the
+    // person stopped), or one of an earlier session, carries on as a new
+    // subagent given its transcript, below.
+    // ⛔ "Of this session" is its record's session, NOT `$.agent.list()`: the
+    // engine drops a finished subagent's task from that list soon after, which
+    // is just when it is resumed (measured live: listed false, so a new agent
+    // was made), while `session.send` resumes a finished one from its transcript.
+    let notItself = ''
+    if (r.sessionId && r.sessionId === sessionId) {
+      if (effort !== undefined) effortFor.set(r.id, effort)
+      const sent = await $.session.send({ to: { agentId: r.id }, text: say })
+        .catch((err: Error) => ({ isDelivered: false as const, reason: err.message }))
+      if (sent.isDelivered) {
+        r.resumes += 1
+        await write($, r)
+        return { result: text('resumeTool', 'resumedSame', { id: r.id.slice(0, 8), model, withEffort, open: openText(r) }) }
+      }
+      if (effort !== undefined) effortFor.delete(r.id)
+      notItself = text('resumeTool', 'notItself', { id: r.id.slice(0, 8), reason: sent.reason })
+    }
+
     const jsonl = await readTranscript($, r)
     // rewound to its last message before a refusal, the newest entries whole
     const history = jsonl
@@ -526,15 +588,11 @@ export const register: Register = (on, options) => {
       : r.lastAnswer ? text('resumePrompt', 'lastAnswerOnly', { answer: r.lastAnswer }) : ''
     if (!history) return { result: text('resumeTool', 'noTranscript', { id: r.id }), isError: true }
 
-    const model = r.answeredBy ?? r.model
-    if (effort !== undefined && model && !effortFits(model, effort)) {
-      return { result: text('resumeTool', 'effortDoesNotFit', { effort, id: r.id.slice(0, 8), fits: effortsText(model) }), isError: true }
-    }
     const m = models.find((x) => sameModel(x.id, model))
     const prompt = text('resumePrompt', 'body', {
       intro: text('resumePrompt', r.status === 'refusal' ? 'introAfterRefusal' : 'intro', { label: r.label, model }),
       history,
-      message: String(message ?? text('resumePrompt', 'defaultMessage')),
+      message: say,
     })
     if (effort !== undefined) pendingEffort.set(promptKey(prompt), effort)   // its first turn picks it up
     const spawned = await $.agent.spawn({
@@ -544,7 +602,7 @@ export const register: Register = (on, options) => {
     }).catch((err: Error) => ({ deny: err.message, agentId: undefined, model: undefined }))
     if (spawned.deny !== undefined || !spawned.agentId) {
       return {
-        result: text('resumeTool', 'couldNot', { id: r.id, reason: spawned.deny ?? `no agent started (${JSON.stringify(spawned).slice(0, 200)})` }),
+        result: notItself + text('resumeTool', 'couldNot', { id: r.id, reason: spawned.deny ?? `no agent started (${JSON.stringify(spawned).slice(0, 200)})` }),
         isError: true,
       }
     }
@@ -563,9 +621,8 @@ export const register: Register = (on, options) => {
     // ⛔ A plugin tool's result is a string (or content blocks): an object was
     // refused live as "does not match its output shape".
     return {
-      result: text('resumeTool', 'started', {
-        from: r.id.slice(0, 8), id: agentId.slice(0, 8), model: spawned.model,
-        withEffort: effort === undefined ? '' : text('resumeTool', 'withEffort', { effort }),
+      result: notItself + text('resumeTool', 'started', {
+        from: r.id.slice(0, 8), id: agentId.slice(0, 8), model: spawned.model, withEffort, open: openText(r),
       }),
     }
   }).catch(($, e, next) => ({ result: hookFailed('resume_subagent', next.error), isError: true }))
@@ -597,14 +654,24 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => ({ result: hookFailed('set_subagent_effort', next.error), isError: true }))
 
   on('command.run', { command: 'duckky' }, async ($, e) => {
-    if (e.args.trim().toLowerCase() !== 'list') return { text: await openSwarm($) }
+    const [verb = '', ...rest] = e.args.trim().split(/\s+/)
+    // /duckky open <id>: the subagent as a main session, written now
+    if (verb.toLowerCase() === 'open') {
+      const r = findAgent(await known($), rest.join(' ')) ?? await findOnDisk($, rest.join(' '))
+      if (!r) return { text: `No subagent matches "${rest.join(' ')}". /duckky list shows them.` }
+      const sid = await copyAsSession($, r).catch(() => null)
+      if (!sid) return { text: `Found ${r.id.slice(0, 8)}, but not its transcript, so there is no session to open.` }
+      return { text: `${r.description} (${r.id.slice(0, 8)}) as a main session. In a terminal in ${r.cwd}:\n  ${openCommand(r)}\nIt is a copy: the subagent itself is not changed.` }
+    }
+    if (verb.toLowerCase() !== 'list') return { text: await openSwarm($) }
     const list = (await known($)).slice(0, 20)
     if (!list.length) return { text: 'No subagents yet. Ask Claude for one on a model, e.g. "use an Opus 4.6 subagent to ...".' }
     const line = (r: AgentRecord) =>
       `${ICON[r.status]} ${r.label.padEnd(10)} ${(r.answeredBy ?? r.model).padEnd(18)} ${r.fork ? '[fork] ' : ''}${r.description}` +
       `${r.effort === undefined ? '' : `  · effort ${r.effort}`}` +
       `${r.refusals ? `  (refused ${r.refusals}x${r.status === 'refusal' ? ', stopped' : ', went on'})` : ''}` +
-      `  [${r.id.slice(0, 8)}${r.sessionId && r.sessionId !== sessionId ? ', earlier session' : ''}]`
+      `  [${r.id.slice(0, 8)}${r.sessionId && r.sessionId !== sessionId ? ', earlier session' : ''}]` +
+      `${r.sessionCopy ? `\n    as a main session: ${openCommand(r)}` : ''}`
     return { text: list.map(line).join('\n') }
   })
 }

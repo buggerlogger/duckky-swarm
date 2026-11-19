@@ -18,11 +18,11 @@ test('messages.json is laid over the built-in texts key by key; notes (_) are ne
   const problems = useMessages(JSON.stringify({
     _readme: ['a note'],
     effort: { _about: 'a note', takesNone: '{label}: no effort, ever' },
-    sendMessage: { refused: ['Use resume_subagent for {id}.', 'Not SendMessage.'] },
+    hookFailed: { threw: ['it broke:', 'see the log'] },
   }))
   expect(problems).toEqual([])
   expect(text('effort', 'takesNone', { label: 'Haiku 4.5' })).toBe('Haiku 4.5: no effort, ever')
-  expect(text('sendMessage', 'refused', { id: 'a1b2c3d4' })).toBe('Use resume_subagent for a1b2c3d4.\nNot SendMessage.')
+  expect(text('hookFailed', 'threw')).toBe('it broke:\nsee the log')
   expect(text('effort', 'takes', { label: 'Opus 5.5', levels: 'low' })).toBe('Opus 5.5 takes effort low')   // left out: built in
   useMessages(null)
 })

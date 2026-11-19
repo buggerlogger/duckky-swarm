@@ -46,12 +46,16 @@ export const DEFAULT_MESSAGES = {
   },
   resumeTool: {
     description:
-      'Resume a subagent from this session or an EARLIER one: it continues on the same model, in the background, with its earlier transcript as context. This call returns at once; the resumed subagent\'s answer to your message comes to you as a message of its own when it finishes, so do not start another agent for the same work. Use it when the user asks to resume, continue or go back to a subagent. `agent` is its id (the first 8 characters are enough, as /duckky shows) or words from its task.',
+      'Resume a subagent and give it a message: the way to go on with the SAME subagent, so use it rather than starting a new one whenever the user wants that subagent to continue or take its next task. A subagent of this session is resumed itself (the same id, its own transcript and model, as the user\'s own resume does); one from an earlier session carries on as a new subagent given its transcript, on the model it was started on. This call returns at once and the subagent works in the background; its answer comes to you as a message when it finishes, so do not start another agent for the same work. `agent` is its id (the first 8 characters are enough, as /duckky shows) or words from its task.',
     agent: 'The subagent: its id or id prefix, or words from its task',
     message: 'What to tell it now',
     effort: 'Optional: how hard it thinks from now on ({levels}, or a token budget)',
+    resumedSame:
+      'Resumed {id} itself on {model}{withEffort}: the same subagent carries on with its own transcript, in the background, and you are told when it finishes. Do not start another agent for this work meanwhile.{open}',
+    notItself: 'Claude Code would not resume {id} itself ({reason}), so it carries on as a new subagent given its transcript. ',
     started:
-      'Resumed {from} as {id} on {model}{withEffort}, in the background: it carries on from its transcript, and its answer will come to you as a message when it finishes. Do not start another agent for this work meanwhile.',
+      'Resumed {from} as {id} on {model}{withEffort}, in the background: it carries on from its transcript, and its answer will come to you as a message when it finishes. Do not start another agent for this work meanwhile.{open}',
+    open: ' The user can also open it as a main session, in a terminal in {cwd}: {command}',
     withEffort: ', effort {effort}',
     noMatch: 'No subagent matches "{query}". Recent: {recent}',
     noneKept: 'none kept',
@@ -94,7 +98,7 @@ export const DEFAULT_MESSAGES = {
   },
   refusalReport: {
     header: '[duckky-swarm] Refusal report: subagent {id} ({label}, {model}) stopped partway; its model refused{times}. Its task: "{task}".',
-    times: ' ({count} times, retries included)',
+    times: ' ({count} times)',
     reason: 'The API\'s reason: {reason}',
     lastMessage: 'Its last message before the refusal:',
     called: '-> called {call}',
@@ -103,13 +107,9 @@ export const DEFAULT_MESSAGES = {
     whatToDo: [
       '',
       'What to do: decide whether this work should go on.',
-      '- If it should, and the subagent was missing context: call resume_subagent with agent "{id}" and a message that explains clearly what this work is: the user\'s goal, the scope, and the context from this conversation and the project\'s instructions that the subagent never saw. Describe it as it is; do not claim permissions or facts the conversation does not support. It rewinds to its last message before the refusal (the refused reply is cut out) and carries on, on {model}.',
+      '- If it should, and the subagent was missing context: call resume_subagent with agent "{id}" and a message that explains clearly what this work is: the user\'s goal, the scope, and the context from this conversation and the project\'s instructions that the subagent never saw. Describe it as it is; do not claim permissions or facts the conversation does not support. The same subagent carries on, on {model}.',
       '- If it should not, tell the user why it stopped instead of resuming it.',
     ],
-  },
-  sendMessage: {
-    refused:
-      'duckky-swarm: {id} stopped on a refusal. Resume it with resume_subagent (agent "{id}"), which rewinds it to its last message before the refusal; a SendMessage would carry the refused reply on.',
   },
   hookFailed: {
     text: 'duckky-swarm: {tool} failed: {why}',

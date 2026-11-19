@@ -1,28 +1,33 @@
 import type { On, TurnStepChunk, TurnStepInput, TurnStepResult } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-// A model beneath the plugin that refuses its first `refusals` requests, then
-// answers. It counts every request that really reaches it.
-function model(on: On, refusals: number) {
-  const seen = { requests: 0 }
+// A model beneath the plugin. It writes its reply in two pieces and waits at
+// `gate` between them, so a test can see whether the first piece left the
+// hook before the reply ended; it refuses its first `refusals` requests.
+function model(on: On, refusals = 0) {
+  const seen = { requests: 0, finished: false }
+  let open = () => {}
+  const gate = new Promise<void>((resolve) => { open = resolve })
   on('turn.step', async function* (_, e) {
     seen.requests += 1
     const refuse = seen.requests <= refusals
-    const text = refuse ? `refused #${seen.requests}` : 'the work, done'
-    yield { kind: 'text', index: 0, text } satisfies TurnStepChunk
+    yield { kind: 'text', index: 0, text: refuse ? 'refused' : 'the work, ' } satisfies TurnStepChunk
+    await gate
+    if (!refuse) yield { kind: 'text', index: 0, text: 'done' } satisfies TurnStepChunk
     yield { kind: 'stop', stopReason: refuse ? 'refusal' : 'end_turn', usage: null } satisfies TurnStepChunk
-    return { turnId: e.turnId, index: e.index, answer: text, toolUses: [], stopReason: refuse ? 'refusal' : 'end_turn', usage: null } satisfies TurnStepResult
+    seen.finished = true
+    return { turnId: e.turnId, index: e.index, answer: refuse ? 'refused' : 'the work, done', toolUses: [], stopReason: refuse ? 'refusal' : 'end_turn', usage: null } satisfies TurnStepResult
   })
   on('ui.toast', () => ({ value: undefined }))
   on('ui.invalidate', () => ({ value: undefined }))
-  return seen
+  return { seen, open: () => open() }
 }
 
 const step = (agentId?: string): TurnStepInput => ({ turnId: 't1', index: 0, model: 'claude-opus-4-6', messageCount: 3, ...(agentId ? { agentId } : {}) })
 
-// Reads a step to its end: its text chunks, and its result (the generator's
-// return value: the test's `$.turn.step` stream has no `.result`).
-async function run(s: AsyncGenerator<TurnStepChunk, TurnStepResult>) {
+// The rest of a step after the first chunk: its texts and its result (the
+// generator's return value: the test's `$.turn.step` stream has no `.result`).
+async function rest(s: AsyncGenerator<TurnStepChunk, TurnStepResult>) {
   const texts: string[] = []
   for (;;) {
     const n = await s.next()
@@ -31,40 +36,32 @@ async function run(s: AsyncGenerator<TurnStepChunk, TurnStepResult>) {
   }
 }
 
-test('a subagent refused twice is asked again; only the answer is kept', async ($, on) => {
-  const seen = model(on, 2)
-  const { texts, result } = await run($.turn.step(step('a1b2c3d4e5')))
-  expect(seen.requests).toBe(3)                 // the request really went to the model three times
-  expect(texts).toEqual(['the work, done'])     // the refused responses never left the hook
+test('a subagent\'s reply streams through as it comes: its first piece is out before the reply ends', async ($, on) => {
+  const m = model(on)
+  const s = $.turn.step(step('a1b2c3d4e5'))
+  const first = await s.next()
+  expect(first.value).toEqual({ kind: 'text', index: 0, text: 'the work, ' })
+  expect(m.seen.finished).toBe(false)   // shown while the model is still writing
+  m.open()
+  const { texts, result } = await rest(s)
+  expect(texts).toEqual(['done'])
   expect(result.stopReason).toBe('end_turn')
 })
 
-test('refused more times than the retries: it stops as refused, after 1 + 3 requests', async ($, on) => {
-  const seen = model(on, 99)
-  const { texts, result } = await run($.turn.step(step('a1b2c3d4e5')))
-  expect(seen.requests).toBe(4)
+test('a refused reply goes through once, unchanged: Claude Code handles a refusal beneath the plugin', async ($, on) => {
+  const m = model(on, 1)
+  const s = $.turn.step(step('a1b2c3d4e5'))
+  expect((await s.next()).value).toEqual({ kind: 'text', index: 0, text: 'refused' })
+  m.open()
+  const { result } = await rest(s)
   expect(result.stopReason).toBe('refusal')
-  expect(texts).toEqual(['refused #4'])         // the last refusal goes through, so the subagent stops
+  expect(m.seen.requests).toBe(1)   // never asked again by the plugin
 })
 
-test('the retries are per subagent, across its whole run', async ($, on) => {
-  const seen = model(on, 99)
-  await run($.turn.step(step('a1b2c3d4e5')))    // spends all 3
-  const { result } = await run($.turn.step({ ...step('a1b2c3d4e5'), index: 1 }))
-  expect(seen.requests).toBe(5)                 // its next step gets no more retries
-  expect(result.stopReason).toBe('refusal')
-})
-
-test('the main conversation is never retried', async ($, on) => {
-  const seen = model(on, 1)
-  const { result } = await run($.turn.step(step()))
-  expect(seen.requests).toBe(1)
-  expect(result.stopReason).toBe('refusal')
-})
-
-test('with Refusal retries = 0 nothing is asked again', { options: { refusalRetries: 0 } }, async ($, on) => {
-  const seen = model(on, 1)
-  const { result } = await run($.turn.step(step('a1b2c3d4e5')))
-  expect(seen.requests).toBe(1)
-  expect(result.stopReason).toBe('refusal')
+test('the main conversation\'s steps pass straight by', async ($, on) => {
+  const m = model(on)
+  const s = $.turn.step(step())
+  expect((await s.next()).value).toEqual({ kind: 'text', index: 0, text: 'the work, ' })
+  m.open()
+  expect((await rest(s)).result.stopReason).toBe('end_turn')
 })

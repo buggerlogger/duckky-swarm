@@ -31,10 +31,11 @@ Desktop app has no `/plugin`. Hit + by the prompt, Plugins, add marketplace `bug
 
 - "Use an Opus 4.6 subagent to review this file."
 - "Fork onto Opus 4.6." A normal fork stays on the parent model. This one copies the chat onto the model you named.
-- "Resume subagent ac82d396." Same model, same transcript, in the background. The answer comes as a message when it's done. Words from the task work too.
+- "Resume subagent ac82d396." The same subagent carries on, on the model it was started on, in the background. The answer comes as a message when it's done. Words from the task work too.
+- Open any subagent as a normal session: `/duckky open ac82d396` prints a `claude --resume <id>` line. Run it in another terminal and keep working with that subagent as your main agent.
 - "Opus 5.5, low effort." "Set that one's effort to high" hits the next request.
 
-`/duckky` opens a pane per subagent. `q` quits. `/duckky list` is model, task, status, id.
+`/duckky` opens a pane per subagent. `q` quits. `/duckky list` is model, task, status, id, and the `claude --resume` line for each.
 
 Needs Node. Windows opens the window. Other systems get the command to paste.
 

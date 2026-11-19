@@ -1,6 +1,6 @@
 {
   "name": "duckky-swarm",
-  "version": "0.3.2",
+  "version": "0.3.4",
   "description": "Subagents on the exact model you name (Opus 4.6, Opus 5, ...), with proof of the model they ran on, forks, and resume across sessions.",
   "author": {
     "name": "buggerlogger",
@@ -35,12 +35,6 @@
       "description": "Who acts out each subagent's work above the prompt and in the /duckky window: Clawd, or Duckky Ducks (the project's own mascot).",
       "options": ["Clawd (recommended)", "Duckky Ducks"],
       "default": "Clawd (recommended)"
-    },
-    "refusalRetries": {
-      "type": "number",
-      "title": "Refusal retries",
-      "description": "When a subagent's model refuses, ask the same request again from just before the refused message, up to this many times per subagent; then it stops as refused. 0 turns it off.",
-      "default": 3
     }
   }
 }
