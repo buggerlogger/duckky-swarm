@@ -143,8 +143,30 @@ names. `.claude-plugin/plugin.json` (with the `/config` settings under
   `parentUuid:null`, an `ai-title`) at SubagentStop and again 3 s later
   (Claude Code writes the last reply just AFTER the stop: the first copy
   lacked it, measured), and by `/duckky open <id>`. `claude --resume <id>`
-  opens it as the main agent (proved live with -p). A copy holding a uuid the
-  subagent never had (the person typed in it) is never written over.
+  opens it as the main agent (proved live with -p). Its title is a
+  `custom-title` record (what /rename writes; AI titles never replace it)
+  with `duckkyTurns`, the turns the plugin wrote: a copy with more turns
+  (the person typed in it) is never written over. `--resume` takes a
+  session's exact TITLE but not an id prefix (measured), so the title is the
+  workspace folder's name.
+- `hooks/workspace.ts`: a duckky subagent's folder
+  `<cwd>/duckky-swarm/<model>-<key>-<slug(task)>/` with findings/opening/
+  closed/block/devlogs.md and temp/ (+ `duckky-swarm/.gitignore` = `*`),
+  made in the `agent.spawn` hook BEFORE `next(e)`, its rules appended to the
+  task. ⛔ The key is the plugin's own (`workspaceKey`), not the agent id: a
+  `turn.start` hook cannot change the turn, and the agent id exists only
+  after the spawn, so the task that names the folder is written first. The
+  session copy's id is `sessionIdFor(workspaceKey)`, one copy per workspace.
+  A subagent that carries on as a new one keeps its workspace:
+  resume_subagent appends the rules itself and leaves the workspace in
+  `pendingWorkspace` (by prompt key) so the spawn hook adds nothing (adding
+  would also break `pendingEffort`'s prompt key). Files are written only
+  where missing. Proved live: the subagent kept all five notes and put its
+  test script in temp/, src/ untouched, and `claude --resume <folder name>`
+  opened it. Setting: `workspaces` (on).
+- ⛔ Write test code with backslashes (regexes, Windows paths) with the
+  Edit/Write tools, never through a bash heredoc or `node -e`: the
+  backslashes are lost on the way (five times in one session).
 - In the test kit `$.turn.step(...)` has no `.result`: read the generator's
   return value (`{ done: true, value }`). The plugin's own `next(e)` streams
   do have `.result`.

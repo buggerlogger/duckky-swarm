@@ -25,6 +25,7 @@ import { activityOf, shownActivity } from '../viewer/model.mjs'
 import { bandTree, rasterKey, stagesFor, type BandAgent } from './band.tsx'
 import { hookFailed, refusalBrief, resumedReport } from './brief.ts'
 import { asSession, diverged, resumeCommand, sessionIdFor } from './session-copy.ts'
+import { newWorkspace, workspaceFiles, workspaceKey, workspaceRules, type Workspace } from './workspace.ts'
 import { text, useMessages } from './messages.ts'
 import { newestWithin, parseTranscript, refusalAt, refusalScene, sessionLines, transcriptLines } from './history.ts'
 import { launchArgv, subagentsDir } from './launcher.ts'
@@ -59,7 +60,7 @@ const ICON: Record<AgentRecord['status'], string> = { running: '●', done: '✓
 const live = new Map<string, AgentRecord>()   // this session's, by agent id
 // resumed agent id -> the subagent it resumed: its answer goes to the main
 // agent as a message when it ends (resume_subagent itself returns at once)
-const delivering = new Map<string, { from: string; label: string }>()
+const delivering = new Map<string, { from: string; label: string; workspace?: string }>()
 let models: ModelEntry[] = []
 let keep = true
 let sessionId = ''
@@ -75,6 +76,11 @@ const effortFor = new Map<string, Effort>()    // agent id -> the effort the mai
 // which comes before its first model request (the spawn's id can come after).
 const pendingEffort = new Map<string, Effort>()
 const promptKey = (text: string) => `${text.length}:${text.slice(0, 400)}`
+let workspacesOn = true       // the Workspace folders setting
+// A subagent that carries on as a new one keeps its workspace: resume_subagent
+// writes the workspace into the prompt and leaves it here, by that prompt, for
+// the spawn hook, which then makes no new one and adds nothing to the prompt.
+const pendingWorkspace = new Map<string, Workspace>()
 
 // A finished agent stays on the band this long, jumping, before it leaves.
 const SHOW_DONE_MS = 8000
@@ -263,12 +269,26 @@ function startedModel(r: AgentRecord): string {
 async function copyAsSession($: EngineInterface, r: AgentRecord): Promise<string | null> {
   const jsonl = await readTranscript($, r)
   if (!jsonl || !r.cwd) return null
-  const sid = sessionIdFor(r.id)
+  // one copy per workspace: a subagent that carried on as a new one writes
+  // over its first generation's, titled with the folder's name
+  const sid = sessionIdFor(r.workspaceKey ?? r.id)
   const path = `${await configDir($)}/projects/${r.cwd.replace(/[^A-Za-z0-9]/g, '-')}/${sid}.jsonl`
   const before = await $.fs.read(path).then((t) => String(t), () => null)
-  if (before === null || !diverged(before, jsonl)) await $.fs.write(path, asSession(jsonl, sid, `${PLUGIN}: ${r.description}`))
+  if (before === null || !diverged(before, jsonl)) await $.fs.write(path, asSession(jsonl, sid, r.workspaceName ?? `${PLUGIN}: ${r.description}`))
   if (r.sessionCopy !== sid) { r.sessionCopy = sid; await write($, r) }
   return sid
+}
+
+const workspaceOf = (r: AgentRecord): Workspace | undefined =>
+  r.workspace && r.workspaceName && r.workspaceKey ? { folder: r.workspace, name: r.workspaceName, key: r.workspaceKey } : undefined
+
+// A workspace's files, each written only where it is missing.
+async function makeWorkspace($: EngineInterface, ws: Workspace, task: string, model: string) {
+  const files = workspaceFiles(cwd, ws, task, model, new Date().toISOString().replace('T', ' ').slice(0, 16))
+  for (const [path, body] of Object.entries(files)) {
+    const there = await $.fs.read(path).then(() => true, () => false)
+    if (!there) await $.fs.write(path, body)
+  }
 }
 
 // A stopped subagent's copy, written again a moment later: Claude Code puts
@@ -288,7 +308,9 @@ async function copyAgain($: EngineInterface) {
 }
 
 // What opens the subagent as a main session, for the person or the main agent.
-const openCommand = (r: AgentRecord) => (r.sessionCopy ? resumeCommand(r.sessionCopy, startedModel(r)) : '')
+// by its title (the workspace folder's name) where it has one: what the person
+// sees in the project, and what --resume matches exactly
+const openCommand = (r: AgentRecord) => (r.sessionCopy ? resumeCommand(r.workspaceName ?? r.sessionCopy, startedModel(r)) : '')
 const openText = (r: AgentRecord) => (r.sessionCopy ? text('resumeTool', 'open', { cwd: r.cwd, command: openCommand(r) }) : '')
 
 // The texts sent to Claude, from messages.json at the plugin's root: the
@@ -305,6 +327,7 @@ export const register: Register = (on, options) => {
   models = parsed.models
   const contextForks = options.forkMode !== 'true'
   keep = options.keepAgents !== false
+  workspacesOn = options.workspaces !== false
   character = characterFor(options.character)
   live.clear()
 
@@ -363,9 +386,22 @@ export const register: Register = (on, options) => {
 
   on('agent.spawn', async ($, e, next) => {
     const forkOn = contextForks && !e.resume ? models.find((m) => e.subagentType === `${PLUGIN}:${m.name}-fork`) : undefined
-    const r = await next(forkOn ? { ...e, prompt: await forkPrompt($, forkOn, e.prompt) } : e)
-    if (r.deny !== undefined || !r.agentId) return r
     const ours = models.find((m) => e.subagentType === `${PLUGIN}:${m.name}` || e.subagentType === `${PLUGIN}:${m.name}-fork`)
+    let prompt = forkOn ? await forkPrompt($, forkOn, e.prompt) : e.prompt
+    // A duckky subagent's workspace, made BEFORE it starts: its task names the
+    // folder, and Claude Code gives it an id only once it has started (so the
+    // key is the plugin's own). One that carries on as a new subagent brings
+    // its workspace, its prompt already saying so.
+    let ws: Workspace | undefined
+    const carried = pendingWorkspace.get(promptKey(e.prompt))
+    if (carried) { pendingWorkspace.delete(promptKey(e.prompt)); ws = carried }
+    else if (ours && workspacesOn && !e.resume && cwd) {
+      ws = newWorkspace(cwd, ours.id, workspaceKey(`${e.tool_use_id}:${Date.now()}:${Math.random()}`), e.description)
+      prompt = `${prompt}\n${workspaceRules(ws)}`
+    }
+    if (ws) await makeWorkspace($, ws, e.description, ours?.id ?? e.model ?? '').catch(() => undefined)
+    const r = await next(prompt === e.prompt ? e : { ...e, prompt })
+    if (r.deny !== undefined || !r.agentId) return r
     const before = live.get(r.agentId)   // a resume within this session
     await write($, {
       ...before,
@@ -385,6 +421,7 @@ export const register: Register = (on, options) => {
       outputTokens: before?.outputTokens ?? 0,
       activity: 'starting',
       background: e.background,
+      ...(ws ? { workspace: ws.folder, workspaceName: ws.name, workspaceKey: ws.key } : {}),
     })
     byToolUse.set(e.tool_use_id, r.agentId)
     restage($)
@@ -462,15 +499,19 @@ export const register: Register = (on, options) => {
     return result
   }).catch(async function* ($, e, next) { return yield* next(e) })
 
-  // The main agent's Agent call: when the subagent it waited on stopped on a
-  // refusal, its result carries where the subagent stood and how to resume it.
+  // The main agent's Agent call: its result says where the subagent's
+  // workspace is, so the main agent reads it; and when the subagent it waited
+  // on stopped on a refusal, where the subagent stood and how to resume it.
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     const out = await next(e)
     const id = byToolUse.get(String(e.tool_use_id ?? ''))
-    const brief = id ? briefs.get(id) : undefined
-    if (!id || !brief || out.deny !== undefined) return out
-    briefs.delete(id)   // delivered
-    return { ...out, context: [...(out.context ?? []), brief] }
+    if (!id || out.deny !== undefined) return out
+    const notes: string[] = []
+    const folder = live.get(id)?.workspace
+    if (folder) notes.push(text('workspace', 'mainAgentNote', { folder }))
+    const brief = briefs.get(id)
+    if (brief) { notes.push(brief); briefs.delete(id) }   // delivered
+    return notes.length ? { ...out, context: [...(out.context ?? []), ...notes] } : out
   }).catch(($, e, next) => next(e))
 
   on('classic.SubagentStop', async ($, e, next) => {
@@ -570,12 +611,16 @@ export const register: Register = (on, options) => {
     let notItself = ''
     if (r.sessionId && r.sessionId === sessionId) {
       if (effort !== undefined) effortFor.set(r.id, effort)
-      const sent = await $.session.send({ to: { agentId: r.id }, text: say })
+      const ws0 = workspaceOf(r)
+      const sent = await $.session.send({ to: { agentId: r.id }, text: ws0 ? say + text('workspace', 'reminder', { folder: ws0.folder }) : say })
         .catch((err: Error) => ({ isDelivered: false as const, reason: err.message }))
+      const where = ws0 ? text('workspace', 'resultNote', { folder: ws0.folder }) : ''
+      // still running: the message waits in its queue, nothing was resumed
+      if (sent.isDelivered && r.status === 'running') return { result: text('resumeTool', 'queued', { id: r.id.slice(0, 8) }) + where }
       if (sent.isDelivered) {
         r.resumes += 1
         await write($, r)
-        return { result: text('resumeTool', 'resumedSame', { id: r.id.slice(0, 8), model, withEffort, open: openText(r) }) }
+        return { result: text('resumeTool', 'resumedSame', { id: r.id.slice(0, 8), model, withEffort, open: openText(r) }) + where }
       }
       if (effort !== undefined) effortFor.delete(r.id)
       notItself = text('resumeTool', 'notItself', { id: r.id.slice(0, 8), reason: sent.reason })
@@ -589,11 +634,17 @@ export const register: Register = (on, options) => {
     if (!history) return { result: text('resumeTool', 'noTranscript', { id: r.id }), isError: true }
 
     const m = models.find((x) => sameModel(x.id, model))
-    const prompt = text('resumePrompt', 'body', {
+    // it keeps its workspace (a duckky subagent from before workspaces gets
+    // one now), the rules after its message; the spawn hook adds none
+    const ws = workspacesOn && m ? (workspaceOf(r) ?? newWorkspace(cwd || r.cwd, m.id, workspaceKey(`resume:${r.id}`), r.description)) : undefined
+    const body = text('resumePrompt', 'body', {
       intro: text('resumePrompt', r.status === 'refusal' ? 'introAfterRefusal' : 'intro', { label: r.label, model }),
       history,
       message: say,
     })
+    const prompt = ws ? `${body}
+${workspaceRules(ws)}` : body
+    if (ws) pendingWorkspace.set(promptKey(prompt), ws)
     if (effort !== undefined) pendingEffort.set(promptKey(prompt), effort)   // its first turn picks it up
     const spawned = await $.agent.spawn({
       prompt,
@@ -608,7 +659,7 @@ export const register: Register = (on, options) => {
     }
     const agentId = spawned.agentId
     // before any await: an agent that ends at once must still find it
-    delivering.set(agentId, { from: r.id, label: r.label })
+    delivering.set(agentId, { from: r.id, label: r.label, workspace: ws?.folder })
     const now = live.get(agentId)
     if (now) { now.resumedFrom = r.id; now.background = true; await write($, now) }
     r.resumes += 1
@@ -623,7 +674,7 @@ export const register: Register = (on, options) => {
     return {
       result: notItself + text('resumeTool', 'started', {
         from: r.id.slice(0, 8), id: agentId.slice(0, 8), model: spawned.model, withEffort, open: openText(r),
-      }),
+      }) + (ws ? text('workspace', 'resultNote', { folder: ws.folder }) : ''),
     }
   }).catch(($, e, next) => ({ result: hookFailed('resume_subagent', next.error), isError: true }))
 
@@ -639,7 +690,7 @@ export const register: Register = (on, options) => {
     if (!live.has(r.id) || r.status !== 'running') {
       return { result: text('effortTool', 'notRunning', { id, status: r.status, effort }), isError: true }
     }
-    const model = r.answeredBy ?? r.model
+    const model = startedModel(r)   // its requests go to that model, whatever answered last
     if (model && !effortFits(model, effort)) {
       return { result: text('effortTool', 'doesNotFit', { effort, id, fits: effortsText(model) }), isError: true }
     }
@@ -671,6 +722,7 @@ export const register: Register = (on, options) => {
       `${r.effort === undefined ? '' : `  · effort ${r.effort}`}` +
       `${r.refusals ? `  (refused ${r.refusals}x${r.status === 'refusal' ? ', stopped' : ', went on'})` : ''}` +
       `  [${r.id.slice(0, 8)}${r.sessionId && r.sessionId !== sessionId ? ', earlier session' : ''}]` +
+      `${r.workspace ? `\n    workspace: ${r.workspace}` : ''}` +
       `${r.sessionCopy ? `\n    as a main session: ${openCommand(r)}` : ''}`
     return { text: list.map(line).join('\n') }
   })

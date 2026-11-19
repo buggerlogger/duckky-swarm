@@ -19,9 +19,14 @@ export type BriefFor = { id: string; label: string; model: string; description: 
 // What the main agent reads when a subagent it resumed ends: resume_subagent
 // returns at once (a hook has 10 s of its own time), so the answer comes
 // later, as a message of its own.
-export type Resumed = { from: string; id: string; label: string; ending: string; answer: string }
+export type Resumed = { from: string; id: string; label: string; ending: string; answer: string; workspace?: string }
 
+// ...and where its workspace is, when it has one.
 export function resumedReport(r: Resumed): string {
+  return ending(r) + (r.workspace ? text('workspace', 'resultNote', { folder: r.workspace }) : '')
+}
+
+function ending(r: Resumed): string {
   const answer = r.answer.trim()
   const who = { from: r.from.slice(0, 8), id: r.id.slice(0, 8), label: r.label }
   if (r.ending === 'done') return text('resumedAnswer', 'finished', { ...who, answer: answer || text('resumedAnswer', 'noWords') })

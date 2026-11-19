@@ -52,6 +52,7 @@ export const DEFAULT_MESSAGES = {
     effort: 'Optional: how hard it thinks from now on ({levels}, or a token budget)',
     resumedSame:
       'Resumed {id} itself on {model}{withEffort}: the same subagent carries on with its own transcript, in the background, and you are told when it finishes. Do not start another agent for this work meanwhile.{open}',
+    queued: 'Sent your message to {id}, which is still running: it reads it at its next step, in the same transcript. Do not start another agent for this work meanwhile.',
     notItself: 'Claude Code would not resume {id} itself ({reason}), so it carries on as a new subagent given its transcript. ',
     started:
       'Resumed {from} as {id} on {model}{withEffort}, in the background: it carries on from its transcript, and its answer will come to you as a message when it finishes. Do not start another agent for this work meanwhile.{open}',
@@ -115,6 +116,45 @@ export const DEFAULT_MESSAGES = {
     text: 'duckky-swarm: {tool} failed: {why}',
     timeout: 'it ran past the 10 s a hook has',
     threw: 'it threw',
+  },
+  workspace: {
+    rules: [
+      '',
+      '## Your workspace (a hard rule)',
+      '',
+      'This task has its own folder: {folder}',
+      'It holds findings.md, opening.md, closed.md, block.md, devlogs.md and temp/. Keep them current AS YOU WORK, not only at the end: the main agent, the user, and you yourself when resumed depend on them.',
+      '- devlogs.md: add a dated line for every step: what you ran or changed, and what came of it.',
+      '- findings.md: every result, with its evidence (file:line, the command and its real output).',
+      '- opening.md: the tasks still open, each with what is left to do.',
+      '- closed.md: each task you finished or dropped, with its outcome.',
+      '- block.md: anything that stops you, and what would unblock it.',
+      '- temp/: ALL scratch work: test scripts, debug code, probes, experiments, copies of files. Never leave scratch files in the project\'s own folders. If you need files from the main agent\'s temp or scratch folder, copy them into temp/ and work on the copies.',
+      '- Any report or .md file the main agent asks for goes in this folder too.',
+      'When you are resumed, read these files first: they are where you stood.',
+      'End your final message with what you did and found in short, then this folder\'s path and which of its files to read.',
+    ],
+    reminder: '\n\n(Keep your workspace current as you go: {folder})',
+    mainAgentNote:
+      '[duckky-swarm] This subagent\'s workspace is {folder}: its findings.md, closed.md, opening.md, block.md and devlogs.md hold what it did and found, and temp/ its scratch work. Read them before relying on its summary, and send the user there for the details.',
+    resultNote: ' Its workspace: {folder}.',
+    gitignore: ['# Duckky Swarm: subagent workspaces, kept out of git. Delete this file to commit them.', '*'],
+    findings: ['# Findings', '', 'Task: {task}', 'Model: {model}', '', 'Each result with its evidence: file:line, the command and its real output.', ''],
+    opening: ['# Open', '', 'Tasks still open, each with what is left to do.', ''],
+    closed: ['# Closed', '', 'Tasks finished or dropped, each with its outcome.', ''],
+    block: ['# Blocked', '', 'What stops the work, and what would unblock it.', ''],
+    devlogs: [
+      '# Dev log',
+      '',
+      'Task: {task}',
+      'Model: {model}',
+      'Started: {started}',
+      'Open this subagent as a session, in a terminal in the project folder: claude --resume {name}',
+      '',
+      'One dated line per step: what was run or changed, and what came of it.',
+      '',
+    ],
+    temp: ['# temp', '', 'Scratch work for this task: test scripts, debug code, probes, copies of files. Not part of the project.'],
   },
 } as const satisfies Record<string, Record<string, Template>>
 

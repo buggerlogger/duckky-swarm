@@ -22,13 +22,23 @@ test('a subagent\'s copy has one session id, a UUID as Claude Code names session
 
 test('the transcript becomes a main session: its own records, off the side chain, the chain started, a title', () => {
   const rows = asSession(TRANSCRIPT, 'sid-1', 'duckky-swarm: fix the add bug').trim().split('\n').map((l) => JSON.parse(l))
-  expect(rows.map((r) => r.type)).toEqual(['user', 'assistant', 'attachment', 'ai-title'])   // request blobs stay behind
+  expect(rows.map((r) => r.type)).toEqual(['user', 'assistant', 'attachment', 'custom-title'])   // request blobs stay behind
   for (const r of rows) expect(r.sessionId).toBe('sid-1')
   for (const r of rows.slice(0, 3)) { expect(r.isSidechain).toBe(false); expect('agentId' in r).toBe(false) }
   expect(rows[0].parentUuid).toBe(null)            // the session starts here, not at the main agent's message
   expect(rows[1].parentUuid).toBe('u1')            // the rest of the chain as it was
   expect(rows[1].message.content[0].text).toBe('Fixed line 2.')
-  expect(rows[3]).toEqual({ type: 'ai-title', aiTitle: 'duckky-swarm: fix the add bug', sessionId: 'sid-1' })
+  // a custom title (what /rename writes): --resume opens it by that exact
+  // title, and the count of turns the plugin wrote
+  expect(rows[3]).toEqual({ type: 'custom-title', customTitle: 'duckky-swarm: fix the add bug', sessionId: 'sid-1', duckkyTurns: 2 })
+})
+
+test('typing in a copy makes it the person\'s: a turn more than the plugin wrote, whatever made the copy', () => {
+  const copy = asSession(TRANSCRIPT, 'sid-1', 't')
+  const later = TRANSCRIPT.replace(/u1|u2|u3/g, (u) => `next-${u}`)   // a new subagent's transcript: other ids
+  expect(diverged(copy, later)).toBe(false)                          // still the plugin's own: written over
+  const typed = `${copy}${JSON.stringify({ type: 'user', uuid: 'theirs', sessionId: 'sid-1', message: { content: 'go on' } })}\n`
+  expect(diverged(typed, later)).toBe(true)
 })
 
 test('a copy the person has worked in is theirs: it holds a message the subagent never had', () => {

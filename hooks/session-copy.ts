@@ -28,30 +28,44 @@ const records = (jsonl: string) =>
   jsonl.split('\n').filter((l) => l.trim()).map((l) => { try { return JSON.parse(l) as Record<string, unknown> } catch { return null } })
     .filter((r): r is Record<string, unknown> => r !== null)
 
+const isTurn = (r: Record<string, unknown>) => r.type === 'user' || r.type === 'assistant'
+
 // The subagent's transcript as a main session: its own records, each moved
 // to the session (`sessionId`), off the side chain, without its agent id;
-// the first starts the chain; a title for `/resume` to list it by.
+// the first starts the chain. Its title is a CUSTOM title, what /rename
+// writes: `claude --resume <title>` opens a session by its exact title
+// (measured), and Claude Code's own AI titles never replace a custom one.
+// The title record also says how many turns the plugin wrote (`duckkyTurns`),
+// so a copy the person has typed in is told apart (diverged).
 export function asSession(jsonl: string, sessionId: string, title: string): string {
   const out: string[] = []
   let first = true
+  let turns = 0
   for (const r of records(jsonl)) {
     if (!KEEP.has(String(r.type))) continue
     const { agentId: _agent, ...rest } = r
     const row: Record<string, unknown> = { ...rest, isSidechain: false, sessionId }
     if (first) { row.parentUuid = null; first = false }
+    if (isTurn(r)) turns += 1
     out.push(JSON.stringify(row))
   }
-  out.push(JSON.stringify({ type: 'ai-title', aiTitle: title, sessionId }))
+  out.push(JSON.stringify({ type: 'custom-title', customTitle: title, sessionId, duckkyTurns: turns }))
   return `${out.join('\n')}\n`
 }
 
-// The person has worked in the copy as a session of its own: it holds a
-// message the subagent never had. Then the copy is theirs and is not
-// written over.
+// The person has worked in the copy as a session of its own (`claude
+// --resume` appends to it): it holds more turns than the plugin wrote. Then
+// the copy is theirs and is not written over. Counting, not matching ids,
+// holds when a subagent that carried on as a NEW one writes the copy its
+// first generation made. A copy without the count (0.3.4) falls back to ids.
 export function diverged(copy: string, jsonl: string): boolean {
+  const rows = records(copy)
+  const mark = rows.find((r) => r.type === 'custom-title' && typeof r.duckkyTurns === 'number')
+  if (mark) return rows.filter(isTurn).length > (mark.duckkyTurns as number)
   const ours = new Set(records(jsonl).map((r) => r.uuid).filter(Boolean))
-  return records(copy).some((r) => (r.type === 'user' || r.type === 'assistant') && typeof r.uuid === 'string' && !ours.has(r.uuid))
+  return rows.some((r) => isTurn(r) && typeof r.uuid === 'string' && !ours.has(r.uuid))
 }
 
-// What to type in a terminal in the subagent's folder.
-export const resumeCommand = (sessionId: string, model: string) => `claude --resume ${sessionId}${model ? ` --model ${model}` : ''}`
+// What to type in a terminal in the project folder: the session's title
+// (its workspace folder's name) or its id, either opens it.
+export const resumeCommand = (sessionOrTitle: string, model: string) => `claude --resume ${sessionOrTitle}${model ? ` --model ${model}` : ''}`

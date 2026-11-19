@@ -47,6 +47,10 @@ export type AgentRecord = {
   effort?: string | number
   /** Its copy as a main session, for `claude --resume <id>` (session-copy.ts). */
   sessionCopy?: string
+  /** Its workspace folder in the project (workspace.ts), its name, and the key in that name. */
+  workspace?: string
+  workspaceName?: string
+  workspaceKey?: string
 }
 
 const PREFIX = 'agent:'

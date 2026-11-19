@@ -118,7 +118,7 @@ test('a context fork starts with the conversation so far, then its task', async 
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
   await $.agent.spawn(spawn('duckky-swarm:opus-4-6-fork', 'say the code word'))
   expect(spawned[0]?.prompt).toContain('USER: the code word is PELICAN-42')
-  expect(spawned[0]?.prompt).toMatch(/Your task:\nsay the code word$/)
+  expect(spawned[0]?.prompt).toMatch(/Your task:\nsay the code word\n\n## Your workspace \(a hard rule\)/)   // its workspace after the task
   expect(store.get('agent:a1b2c3d4e5')).toMatchObject({ fork: true, requested: 'claude-opus-4-6' })
 })
 
@@ -140,7 +140,7 @@ test('resume_subagent continues an earlier session\'s subagent on its model, wit
   for (let i = 0; i < 200 && !spawned.length; i++) await new Promise<void>((r) => setTimeout(r, 5))
   expect(spawned[0]?.subagentType).toBe('duckky-swarm:opus-4-6')
   expect(spawned[0]?.prompt).toContain('AGENT: It is the N+1 in orders.ts line 88.')
-  expect(spawned[0]?.prompt).toMatch(/New instruction:\nnow fix it$/)
+  expect(spawned[0]?.prompt).toMatch(/New instruction:\nnow fix it\n\n## Your workspace \(a hard rule\)/)
   // The rest (the resumed agent's answer coming back as the tool's result) is
   // not testable here: an agent id is "set by core", and a test hook that
   // answers agent.spawn starts no agent, so the plugin's spawn gets none back.
@@ -447,7 +447,7 @@ test('resume_subagent resumes a subagent of this session ITSELF, through Claude 
   await $.agent.spawn(spawn('duckky-swarm:opus-5-fork', 'close the gap'))
   await $.turn.complete(finished('a1b2c3d4e5', 'claude-opus-5'))
   const r = await $.tool.call({ tool: 'mcp__duckky-swarm__resume_subagent', agent: 'a1b2c3d4', message: 'next task: bid 277' } as never) as { result?: unknown }
-  expect(sends).toEqual([{ to: expect.stringContaining('a1b2c3d4e5'), text: 'next task: bid 277' }])
+  expect(sends).toEqual([{ to: expect.stringContaining('a1b2c3d4e5'), text: expect.stringMatching(/^next task: bid 277\n\n\(Keep your workspace current as you go: \/w\/duckky-swarm\/claude-opus-5-[0-9a-f]{8}-close-the-gap\)$/) }])
   expect(spawned.length).toBe(1)   // only the original: nothing new started
   expect(String(r.result)).toContain('Resumed a1b2c3d4 itself on claude-opus-5')
 })
@@ -476,11 +476,16 @@ test('a subagent that stops is saved as a session claude --resume opens; /duckky
   expect(sid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
   const copy = writes.get(`C:/Users/t/.claude/projects/-w/${sid}.jsonl`) ?? ''
   expect(copy.trim().split('\n').map((l) => JSON.parse(l).sessionId).every((s) => s === sid)).toBe(true)
-  expect((await $.command.run(duckky('list'))).text).toContain(`as a main session: claude --resume ${sid} --model claude-opus-4-6`)
-  expect((await $.command.run(duckky('open a1b2c3d4'))).text).toContain(`claude --resume ${sid} --model claude-opus-4-6`)
+  // its title is its workspace folder's name: what --resume opens it by
+  const rec = store.get('agent:a1b2c3d4e5') as { workspaceName: string; workspaceKey: string }
+  expect(rec.workspaceName).toMatch(/^claude-opus-4-6-[0-9a-f]{8}-reverse-obf\.js$/)
+  expect(sid).toBe(sessionIdFor(rec.workspaceKey))
+  expect(JSON.parse(copy.trim().split('\n').pop() ?? '{}')).toMatchObject({ type: 'custom-title', customTitle: rec.workspaceName })
+  expect((await $.command.run(duckky('list'))).text).toContain(`as a main session: claude --resume ${rec.workspaceName} --model claude-opus-4-6`)
+  expect((await $.command.run(duckky('open a1b2c3d4'))).text).toContain(`claude --resume ${rec.workspaceName} --model claude-opus-4-6`)
 })
 
-test('a copy the person has worked in as a session is never written over', async ($, on) => {
+test('a copy the person has worked in as a session is never written over', { options: { workspaces: false } }, async ($, on) => {
   const sid = sessionIdFor('a1b2c3d4e5')
   const theirs = `${asSession(REFUSED, sid, 't')}${JSON.stringify({ type: 'user', uuid: 'theirs-1', sessionId: sid, message: { content: 'their own work' } })}\n`
   engine(on, 'claude-opus-4-6', { [TRANSCRIPT]: REFUSED, [`C:/Users/t/.claude/projects/-w/${sid}.jsonl`]: theirs })
@@ -491,4 +496,80 @@ test('a copy the person has worked in as a session is never written over', async
   await $.agent.spawn(spawn('duckky-swarm:opus-4-6', 'reverse obf.js'))
   await $.classic.SubagentStop({ stop_hook_active: false, agent_id: 'a1b2c3d4e5', agent_transcript_path: TRANSCRIPT, agent_type: 'duckky-swarm:opus-4-6' } as never)
   expect(writes).toEqual([])
+})
+
+test('resume_subagent to a subagent still running queues the message for it, and says so: nothing is resumed', async ($, on) => {
+  const { store } = engine(on, 'claude-opus-5')
+  on('session.send', () => ({ isDelivered: true } as never))
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn(spawn('duckky-swarm:opus-5', 'close the gap'))
+  const r = await $.tool.call({ tool: 'mcp__duckky-swarm__resume_subagent', agent: 'a1b2c3d4', message: 'also check bid 24' } as never) as { result?: unknown }
+  expect(String(r.result)).toMatch(/^Sent your message to a1b2c3d4, which is still running/)
+  expect((store.get('agent:a1b2c3d4e5') as { resumes: number }).resumes).toBe(0)
+})
+
+// --- workspaces ----------------------------------------------------------------
+
+// the test kit hands fs a normalised absolute path (/w/a arrives as C:\w\a)
+const plainPath = (p: string) => p.split(String.fromCharCode(92)).join('/').replace(/^[A-Za-z]:/, '')
+const WS = /^\/w\/duckky-swarm\/claude-opus-5-5-[0-9a-f]{8}-compare-the-trace-shapes$/
+
+test('a duckky subagent gets its workspace BEFORE it starts: the folder and its files, and the rules after its task', async ($, on) => {
+  const { spawned, store } = engine(on, 'claude-opus-5-5')
+  const writes = new Map<string, string>()
+  on('fs.write', (_, e) => (writes.set(plainPath(e.path), e.text), { value: undefined }))
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn(spawn('duckky-swarm:opus-5-5', 'Compare the trace shapes'))
+  const rec = store.get('agent:a1b2c3d4e5') as { workspace: string; workspaceName: string }
+  expect(rec.workspace).toMatch(WS)
+  const names = [...writes.keys()].map((p) => p.replace(`${rec.workspace}/`, '')).sort()
+  expect(names).toEqual(['/w/duckky-swarm/.gitignore', 'block.md', 'closed.md', 'devlogs.md', 'findings.md', 'opening.md', 'temp/README.md'])
+  expect(spawned[0]?.prompt).toMatch(/^Compare the trace shapes\n\n## Your workspace \(a hard rule\)/)
+  expect(spawned[0]?.prompt).toContain(`This task has its own folder: ${rec.workspace}`)
+})
+
+test('the main agent\'s Agent result points it at the workspace', async ($, on) => {
+  engine(on, 'claude-opus-5-5')
+  on('tool.call', (_, e) => (e.tool === 'Agent' ? { result: 'launched' } : { result: 'ok' }))
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn(spawn('duckky-swarm:opus-5-5', 'Compare the trace shapes'))
+  const out = await $.tool.call({ tool: 'Agent', tool_use_id: 'toolu_test', description: 'x', prompt: 'x', subagent_type: 'duckky-swarm:opus-5-5' } as never) as { context?: string[] }
+  expect(out.context?.[0]).toMatch(/^\[duckky-swarm\] This subagent's workspace is \/w\/duckky-swarm\/claude-opus-5-5-[0-9a-f]{8}-compare-the-trace-shapes: its findings\.md/)
+})
+
+test('no workspace for a subagent that is not a duckky one, nor with Workspace folders off', async ($, on) => {
+  const { spawned, store } = engine(on, 'claude-opus-5-5')
+  const writes: string[] = []
+  on('fs.write', (_, e) => (writes.push(e.path), { value: undefined }))
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn({ ...spawn('general-purpose', 'look around'), tool_use_id: 'toolu_gp' })
+  expect(spawned[0]?.prompt).toBe('look around')
+  expect((store.get('agent:a1b2c3d4e5') as { workspace?: string }).workspace).toBeUndefined()
+  expect(writes.filter((p) => /duckky-swarm[\\/]/.test(p))).toEqual([])
+})
+
+test('Workspace folders off: a duckky subagent gets its task as it was', { options: { workspaces: false } }, async ($, on) => {
+  const { spawned } = engine(on, 'claude-opus-5-5')
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn(spawn('duckky-swarm:opus-5-5', 'Compare the trace shapes'))
+  expect(spawned[0]?.prompt).toBe('Compare the trace shapes')
+})
+
+test('a subagent that carries on as a new one keeps its workspace: no second folder, the same folder in its prompt', async ($, on) => {
+  const { spawned, store } = engine(on, 'claude-opus-5-5', { [TRANSCRIPT]: REFUSED })
+  const writes: string[] = []
+  on('fs.write', (_, e) => (writes.push(plainPath(e.path)), { value: undefined }))
+  on('session.send', () => ({ isDelivered: false, reason: 'stopped by the user' } as never))
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn(spawn('duckky-swarm:opus-5-5', 'Compare the trace shapes'))
+  const folder = (store.get('agent:a1b2c3d4e5') as { workspace: string }).workspace
+  await $.turn.complete(finished('a1b2c3d4e5', 'claude-opus-5-5'))
+  const made = writes.length
+  const call = $.tool.call({ tool: 'mcp__duckky-swarm__resume_subagent', agent: 'a1b2c3d4', message: 'next: bid 24' } as never)
+  for (let i = 0; i < 200 && spawned.length < 2; i++) await new Promise<void>((resolve) => setTimeout(resolve, 5))
+  expect(spawned[1]?.prompt).toContain(`This task has its own folder: ${folder}`)
+  expect(spawned[1]?.prompt.split('## Your workspace (a hard rule)').length).toBe(2)   // the rules once, not twice
+  // no new folder (the .gitignore is the whole duckky-swarm folder's)
+  expect(writes.slice(made).filter((p) => p.includes('/duckky-swarm/') && !p.startsWith(folder) && !p.endsWith('/duckky-swarm/.gitignore'))).toEqual([])
+  await call   // its result needs the new agent's id, which a plugin spawn gets only live
 })

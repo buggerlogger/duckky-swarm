@@ -22,6 +22,7 @@ Open `/config` after install. The defaults are already filled in. Claude Code ma
 | Fork on another model | `context` | `context` starts a subagent on the named model and gives it a copy of the conversation. `true` is a real fork, which stays on the parent model. |
 | Keep subagents across sessions | on | The store keeps model, task, and transcript so a later session can resume. |
 | Character | Clawd | Clawd or Duckky Ducks, above the prompt and in `/duckky`. |
+| Workspace folders | on | A folder per duckky subagent in the project, `duckky-swarm/<model>-<id>-<task>/`. See Workspaces. |
 
 The shipped default list is long: Fable, Opus, Sonnet, and Haiku ids from 4.5 upward. Each type is added to the session prompt. Delete the ones you do not use.
 
@@ -38,6 +39,28 @@ A subagent from an earlier session, or one Claude Code won't resume (one you sto
 Either way the subagent runs on the model it was started for. If a refusal moved its replies to a fallback model, the resume goes back to the model you chose.
 
 The call returns right away. A hook gets 10 seconds of its own time, and a resume can run for minutes, so the tool can't wait for the answer. Under `claude -p` a background subagent ends with the main turn.
+
+## Workspaces
+
+Every duckky subagent gets a folder in the project before it starts:
+
+```
+duckky-swarm/
+  .gitignore                                   keeps the folder out of git
+  claude-opus-5-5-a1b2c3d4-compare-trace-shapes/
+    findings.md    results, each with its evidence
+    opening.md     tasks still open
+    closed.md      tasks finished or dropped, with the outcome
+    block.md       what stops the work
+    devlogs.md     a dated line per step
+    temp/          test scripts, debug code, copies of files
+```
+
+The name is `<model>-<id>-<task>`. The subagent is told to keep these files current as it works, to put all scratch work in `temp/`, to copy anything it needs from the main agent's temp folder into its own, to save any report the main agent asks for in this folder, and to end its answer with the folder's path. The main agent's Agent result names the folder too.
+
+The folder name is also the title of the subagent's session copy, so `claude --resume <folder name>` opens it. A subagent that is resumed keeps its folder, even one that carries on as a new subagent.
+
+The folder sits in the folder Claude Code was started in. Turn it off with Workspace folders in `/config`. To commit the workspaces, delete `duckky-swarm/.gitignore`.
 
 ## Open a subagent as a normal session
 
